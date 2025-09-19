@@ -24,4 +24,5 @@ target_link_libraries(fattree
   ns3.45-applications-default
   ns3.45-csma-default
   ns3.45-point-to-point-default
+  ns3.45-netanim-default
 )

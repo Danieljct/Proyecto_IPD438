@@ -4,6 +4,7 @@
 #include "ns3/point-to-point-module.h"
 #include "ns3/csma-module.h"
 #include "ns3/applications-module.h"
+#include "ns3/netanim-module.h"
 
 using namespace ns3;
 
@@ -84,6 +85,18 @@ int main(int argc, char *argv[])
 
   // --- Activar routing
   Ipv4GlobalRoutingHelper::PopulateRoutingTables();
+  
+  // Configurar animación y posiciones de nodos
+  AnimationInterface anim("fattree.xml");  // archivo de salida
+  
+  // Posiciones de hosts y switches para la visualización
+  anim.SetConstantPosition(hosts.Get(0), 10, 50);   // Host 0
+  anim.SetConstantPosition(hosts.Get(1), 10, 90);   // Host 1
+  anim.SetConstantPosition(switches.Get(0), 50, 70); // Switch 0
+  
+  anim.SetConstantPosition(hosts.Get(2), 90, 50);   // Host 2
+  anim.SetConstantPosition(hosts.Get(3), 90, 90);   // Host 3
+  anim.SetConstantPosition(switches.Get(1), 130, 70); // Switch 1
 
   std::cout << "=== Configuración completada, iniciando simulación ===" << std::endl;
   std::cout << "Host0 (10.1.1.1) enviará 5 paquetes a Host3 (10.1.2.2)" << std::endl;
