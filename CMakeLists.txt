@@ -1,0 +1,27 @@
+cmake_minimum_required(VERSION 3.10)
+project(MisExperimentosNs3)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Ajusta esta ruta a donde tienes compilado ns-3
+set(NS3_DIR "/home/daniel/PaperRedes/ns-3-allinone/ns-3.45/build")
+
+# Incluye headers de NS-3
+include_directories(${NS3_DIR}/include)
+
+# Busca librerías de NS-3
+link_directories(${NS3_DIR}/lib)
+
+# Tu ejemplo
+add_executable(fattree fattree.cc)
+
+# Enlaza con NS-3 (todas las libs principales)
+target_link_libraries(fattree
+  ns3.45-core-default
+  ns3.45-network-default
+  ns3.45-internet-default
+  ns3.45-applications-default
+  ns3.45-csma-default
+  ns3.45-point-to-point-default
+)
