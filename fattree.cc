@@ -9,11 +9,16 @@
 
 using namespace ns3;
 
-// Variables globales para contadores ECN
+// Variables globales para contadores ECN y métricas tipo iperf3
 QueueDiscContainer globalQdiscs;
 uint64_t totalEcnMarks = 0;
 uint64_t totalDrops = 0;
 uint64_t totalEnqueues = 0;
+
+// Variables para estadísticas tipo iperf3
+uint64_t totalBytesSent = 0;
+uint64_t totalBytesReceived = 0;
+double simulationStartTime = 1.0; // Cuando empiezan las aplicaciones
 
 // CALLBACK PARA MARCAS ECN - Versión simple para NS-3.45
 void EcnMarkCallback(Ptr<const QueueDiscItem> item)
@@ -41,7 +46,43 @@ void EnqueueCallback(Ptr<const QueueDiscItem> item)
   }
 }
 
-// FUNCIÓN DE MONITOREO MEJORADA - USA ESTADÍSTICAS INTEGRADAS
+// FUNCIÓN PARA CALCULAR THROUGHPUT TIPO IPERF3
+void PrintIperf3Stats(ApplicationContainer& servers)
+{
+  double currentTime = Simulator::Now().GetSeconds();
+  double elapsedTime = currentTime - simulationStartTime;
+  
+  std::cout << "\n=== ESTADÍSTICAS TIPO IPERF3 ===" << std::endl;
+  std::cout << "Tiempo: " << currentTime << "s (Duración: " << elapsedTime << "s)" << std::endl;
+  
+  uint64_t totalReceived = 0;
+  
+  // Obtener estadísticas de los servidores PacketSink
+  for (uint32_t i = 0; i < servers.GetN(); ++i)
+  {
+    Ptr<PacketSink> sink = DynamicCast<PacketSink>(servers.Get(i));
+    if (sink)
+    {
+      uint64_t bytesReceived = sink->GetTotalRx();
+      totalReceived += bytesReceived;
+      
+      double throughputMbps = (bytesReceived * 8.0) / (elapsedTime * 1000000.0);
+      
+      std::cout << "Servidor " << i << ":" << std::endl;
+      std::cout << "  - Bytes recibidos: " << bytesReceived << " bytes" << std::endl;
+      std::cout << "  - Throughput: " << throughputMbps << " Mbps" << std::endl;
+    }
+  }
+  
+  if (elapsedTime > 0) {
+    double totalThroughputMbps = (totalReceived * 8.0) / (elapsedTime * 1000000.0);
+    std::cout << "TOTAL COMBINADO:" << std::endl;
+    std::cout << "  - Throughput total: " << totalThroughputMbps << " Mbps" << std::endl;
+    std::cout << "  - Utilización de enlace: " << (totalThroughputMbps / 10.0) * 100 << "%" << std::endl;
+  }
+}
+
+// FUNCIÓN DE MONITOREO MEJORADA - USA ESTADÍSTICAS INTEGRADAS + IPERF3
 void PrintQueueStats()
 {
   std::cout << "\n=== ESTADÍSTICAS DE RED ===" << std::endl;
@@ -198,51 +239,73 @@ int main(int argc, char *argv[])
   address.SetBase("10.1.5.0", "255.255.255.0");
   Ipv4InterfaceContainer ifaceCore = address.Assign(devCore);
 
-  // 8. CONFIGURACIÓN DE APLICACIONES
-  // Servidor TCP en Host3 - escucha conexiones entrantes
-  uint16_t port = 8080;
+  // 8. CONFIGURACIÓN DE APLICACIONES TIPO IPERF3
+  // ===========================================
+  
+  // SERVIDOR IPERF3 PRINCIPAL en Host3 (puerto 5201 - default iperf3)
+  uint16_t iperf3Port = 5201;
+  PacketSinkHelper iperf3Server("ns3::TcpSocketFactory", 
+                               InetSocketAddress(Ipv4Address::GetAny(), iperf3Port));
+  ApplicationContainer serverApps = iperf3Server.Install(hosts.Get(3));
+  serverApps.Start(Seconds(0.5));
+  serverApps.Stop(Seconds(12.0));
 
-  PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory", 
-                                   InetSocketAddress(Ipv4Address::GetAny(), port));
-  ApplicationContainer serverApps = packetSinkHelper.Install(hosts.Get(3));
-  serverApps.Start(Seconds(1.0));
-  serverApps.Stop(Seconds(10.0));
-
-  // Cliente TCP en Host0 - genera tráfico agresivo para forzar congestión
-  OnOffHelper onoff("ns3::TcpSocketFactory", 
-                   InetSocketAddress(ifaceHost3.GetAddress(0), port));
-  onoff.SetConstantRate(DataRate("50Mbps"));     // 5x la capacidad del enlace
-  onoff.SetAttribute("PacketSize", UintegerValue(1460));  // MSS típico
-  onoff.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=8]"));
-  onoff.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
-
-  ApplicationContainer clientApps = onoff.Install(hosts.Get(0));
-  clientApps.Start(Seconds(2.0));
+  // CLIENTE IPERF3 PRINCIPAL: Host0 -> Host3 (Flujo de larga duración)
+  BulkSendHelper iperf3Client("ns3::TcpSocketFactory", 
+                             InetSocketAddress(ifaceHost3.GetAddress(0), iperf3Port));
+  iperf3Client.SetAttribute("MaxBytes", UintegerValue(0)); // Transmisión continua (como iperf3 -t)
+  iperf3Client.SetAttribute("SendSize", UintegerValue(1460)); // MSS típico
+  
+  ApplicationContainer clientApps = iperf3Client.Install(hosts.Get(0));
+  clientApps.Start(Seconds(1.0));
   clientApps.Stop(Seconds(10.0));
 
-  // Agregar tráfico adicional desde Host1 para MÁS congestión
-  OnOffHelper onoff2("ns3::TcpSocketFactory", 
-                    InetSocketAddress(ifaceHost2.GetAddress(0), port+1));
-  onoff2.SetConstantRate(DataRate("30Mbps"));   // Reducido para evitar saturación total
-  onoff2.SetAttribute("PacketSize", UintegerValue(1460));
-  onoff2.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=6]"));
-  onoff2.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+  // SERVIDOR IPERF3 SECUNDARIO en Host2 (puerto 5202)
+  uint16_t iperf3Port2 = 5202;
+  PacketSinkHelper iperf3Server2("ns3::TcpSocketFactory", 
+                                InetSocketAddress(Ipv4Address::GetAny(), iperf3Port2));
+  ApplicationContainer serverApps2 = iperf3Server2.Install(hosts.Get(2));
+  serverApps2.Start(Seconds(0.5));
+  serverApps2.Stop(Seconds(12.0));
 
-  // Servidor adicional en Host2
-  PacketSinkHelper packetSinkHelper2("ns3::TcpSocketFactory", 
-                                    InetSocketAddress(Ipv4Address::GetAny(), port+1));
-  ApplicationContainer serverApps2 = packetSinkHelper2.Install(hosts.Get(2));
-  serverApps2.Start(Seconds(1.0));
-  serverApps2.Stop(Seconds(10.0));
+  // CLIENTE IPERF3 CON RÁFAGAS: Host1 -> Host2 (imitando iperf3 con intervalos)
+  OnOffHelper iperf3Burst("ns3::TcpSocketFactory", 
+                         InetSocketAddress(ifaceHost2.GetAddress(0), iperf3Port2));
+  iperf3Burst.SetConstantRate(DataRate("40Mbps"));  // 4x capacidad para crear ráfagas
+  iperf3Burst.SetAttribute("PacketSize", UintegerValue(1460));
+  
+  // Ráfagas tipo iperf3: ON durante 2s, OFF durante 1s (simulando intervalos de reporte)
+  iperf3Burst.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=2.0]"));
+  iperf3Burst.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=1.0]"));
 
-  ApplicationContainer clientApps2 = onoff2.Install(hosts.Get(1));
-  clientApps2.Start(Seconds(2.5));
+  ApplicationContainer clientApps2 = iperf3Burst.Install(hosts.Get(1));
+  clientApps2.Start(Seconds(2.0));
   clientApps2.Stop(Seconds(9.0));
 
-  // 9. MONITOREO DE COLAS
-  // Función que verifica el estado de las colas RED periódicamente
-  for (double t = 2.5; t <= 10.0; t += 1.0) {
+  // TRÁFICO DE FONDO ADICIONAL: Simula múltiples flujos iperf3 paralelos
+  OnOffHelper backgroundTraffic("ns3::TcpSocketFactory", 
+                               InetSocketAddress(ifaceHost3.GetAddress(0), iperf3Port));
+  backgroundTraffic.SetConstantRate(DataRate("20Mbps"));  // Tráfico de fondo
+  backgroundTraffic.SetAttribute("PacketSize", UintegerValue(1460));
+  backgroundTraffic.SetAttribute("OnTime", StringValue("ns3::ExponentialRandomVariable[Mean=3.0]"));
+  backgroundTraffic.SetAttribute("OffTime", StringValue("ns3::ExponentialRandomVariable[Mean=1.0]"));
+
+  ApplicationContainer backgroundApps = backgroundTraffic.Install(hosts.Get(1));
+  backgroundApps.Start(Seconds(3.0));
+  backgroundApps.Stop(Seconds(8.0));
+
+  // 9. MONITOREO ESTILO IPERF3 Y COLAS RED
+  // =====================================
+  
+  // Combinar todas las aplicaciones servidor para estadísticas
+  ApplicationContainer allServers;
+  allServers.Add(serverApps);
+  allServers.Add(serverApps2);
+  
+  // Reportes periódicos estilo iperf3 (cada 1 segundo)
+  for (double t = 2.0; t <= 10.0; t += 1.0) {
     Simulator::Schedule(Seconds(t), &PrintQueueStats);
+    Simulator::Schedule(Seconds(t + 0.5), &PrintIperf3Stats, allServers);
   }
 
   // 10. TABLA DE ENRUTAMIENTO
@@ -265,15 +328,20 @@ int main(int argc, char *argv[])
   std::cout << "=== Configuración completada, iniciando simulación ===" << std::endl;
   std::cout << "✓ ECN configurado en colas RED (NS-3.45)" << std::endl;
   std::cout << "✓ Umbrales RED: MinTh=5, MaxTh=15, MaxSize=30 paquetes" << std::endl;
-  std::cout << "✓ Tráfico: 50Mbps + 30Mbps vs 10Mbps de capacidad" << std::endl;
-  std::cout << "✓ Monitoreo de estadísticas activado" << std::endl;
+  std::cout << "✓ Aplicaciones tipo iperf3 configuradas:" << std::endl;
+  std::cout << "  - Flujo principal: Host0->Host3 (puerto 5201)" << std::endl;
+  std::cout << "  - Flujo con ráfagas: Host1->Host2 (puerto 5202)" << std::endl;
+  std::cout << "  - Tráfico de fondo: Host1->Host3 (paralelo)" << std::endl;
+  std::cout << "✓ Capacidad de enlace: 10Mbps vs ~100Mbps de tráfico agregado" << std::endl;
+  std::cout << "✓ Monitoreo estilo iperf3 + ECN activado" << std::endl;
   std::cout << "⚠️  NOTA: ECN en TCP puede requerir configuración adicional en NS-3.45" << std::endl;
 
   Simulator::Stop(Seconds(11.0));
   Simulator::Run();
   
-  std::cout << "\n=== RESUMEN FINAL ECN ===" << std::endl;
+  std::cout << "\n=== RESUMEN FINAL TIPO IPERF3 + ECN ===" << std::endl;
   
+  // Estadísticas ECN
   uint64_t finalMarks = 0;
   uint64_t finalDrops = 0;
   
@@ -294,18 +362,48 @@ int main(int argc, char *argv[])
     }
   }
   
-  std::cout << "Total marcas ECN: " << finalMarks << std::endl;
-  std::cout << "Total drops: " << finalDrops << std::endl;
+  std::cout << "ESTADÍSTICAS ECN:" << std::endl;
+  std::cout << "  - Total marcas ECN: " << finalMarks << std::endl;
+  std::cout << "  - Total drops: " << finalDrops << std::endl;
   
-  if (finalMarks > 0) {
-    std::cout << "✓ ECN FUNCIONANDO CORRECTAMENTE" << std::endl;
-  } else {
-    std::cout << "✗ ECN NO DETECTADO - Verificar configuración" << std::endl;
-    std::cout << "  Sugerencias:" << std::endl;
-    std::cout << "  - Aumentar tráfico o reducir umbrales RED" << std::endl;
-    std::cout << "  - Verificar que UseEcn=true en RedQueueDisc" << std::endl;
-    std::cout << "  - Verificar que los paquetes TCP soportan ECN" << std::endl;
+  // Estadísticas finales tipo iperf3
+  uint64_t totalFinalReceived = 0;
+  double totalSimulationTime = 9.0; // 10.0 - 1.0 (tiempo de inicio)
+  
+  // Obtener estadísticas finales de servidores
+  Ptr<PacketSink> sink1 = DynamicCast<PacketSink>(serverApps.Get(0));
+  Ptr<PacketSink> sink2 = DynamicCast<PacketSink>(serverApps2.Get(0));
+  
+  if (sink1) {
+    uint64_t bytes1 = sink1->GetTotalRx();
+    totalFinalReceived += bytes1;
+    double throughput1 = (bytes1 * 8.0) / (totalSimulationTime * 1000000.0);
+    std::cout << "  - Servidor 1 (5201): " << throughput1 << " Mbps" << std::endl;
   }
+  
+  if (sink2) {
+    uint64_t bytes2 = sink2->GetTotalRx();
+    totalFinalReceived += bytes2;
+    double throughput2 = (bytes2 * 8.0) / (totalSimulationTime * 1000000.0);
+    std::cout << "  - Servidor 2 (5202): " << throughput2 << " Mbps" << std::endl;
+  }
+  
+  double totalThroughput = (totalFinalReceived * 8.0) / (totalSimulationTime * 1000000.0);
+  std::cout << "  - Throughput total: " << totalThroughput << " Mbps" << std::endl;
+  
+  // Evaluación final
+  if (finalMarks > 0) {
+    std::cout << "\n✓ ECN FUNCIONANDO CORRECTAMENTE" << std::endl;
+  } else {
+    std::cout << "\n✗ ECN NO DETECTADO - Verificar configuración TCP" << std::endl;
+  }
+  
+  std::cout << "\n📊 RESUMEN COMO IPERF3:" << std::endl;
+  std::cout << "   Duración total: " << totalSimulationTime << " segundos" << std::endl;
+  std::cout << "   Throughput agregado: " << totalThroughput << " Mbps" << std::endl;
+  std::cout << "   Utilización enlace: " << (totalThroughput / 10.0) * 100 << "%" << std::endl;
+  std::cout << "   Congestión detectada: " << (finalDrops > 0 ? "SÍ" : "NO") << std::endl;
+  std::cout << "   Paquetes perdidos: " << finalDrops << std::endl;
 
   Simulator::Destroy();
 
