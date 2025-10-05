@@ -25,4 +25,9 @@ target_link_libraries(fattree
   ns3.45-csma-default
   ns3.45-point-to-point-default
   ns3.45-netanim-default
+  ns3.45-traffic-control-default
 )
+
+# Flags de compilación
+target_compile_options(fattree PRIVATE ${NS3_CFLAGS_OTHER})
+target_link_directories(fattree PRIVATE ${NS3_LIBRARY_DIRS})
