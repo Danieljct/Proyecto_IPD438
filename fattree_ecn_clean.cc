@@ -34,6 +34,20 @@ void MeasureEcnStatistics()
   
   std::cout << "\nEstado de colas RED:" << std::endl;
   
+  // Mapeo de colas a enlaces para entender el tráfico
+  std::vector<std::string> colaDescripcion = {
+    "Host0->Switch0 (TCP client)",     // Cola 0
+    "Switch0->Host0",                  // Cola 1  
+    "Host1->Switch0 (UDP flood)",      // Cola 2 - ¡Aquí está el problema!
+    "Switch0->Host1",                  // Cola 3
+    "Host2->Switch1",                  // Cola 4
+    "Switch1->Host2",                  // Cola 5
+    "Host3->Switch1 (TCP+UDP dest)",   // Cola 6
+    "Switch1->Host3",                  // Cola 7
+    "Switch0->Switch1 (Core link)",    // Cola 8 - ¡Aquí hay ECN!
+    "Switch1->Switch0"                 // Cola 9
+  };
+  
   for (uint32_t i = 0; i < globalQdiscs.GetN(); ++i)
   {
     Ptr<RedQueueDisc> red = DynamicCast<RedQueueDisc>(globalQdiscs.Get(i));
@@ -47,9 +61,18 @@ void MeasureEcnStatistics()
         ecnMarks += pair.second;
       }
       
-      std::cout << "Cola " << i << ": ECN=" << ecnMarks 
+      std::cout << "Cola " << i << " (" << colaDescripcion[i] << "):" << std::endl;
+      std::cout << "  ECN=" << ecnMarks 
                 << ", Drops=" << stats.nTotalDroppedPackets 
                 << ", Enqueues=" << stats.nTotalEnqueuedPackets << std::endl;
+      
+      // Análisis especial para colas problemáticas
+      if (stats.nTotalDroppedPackets > 1000 && ecnMarks == 0) {
+        std::cout << "  🔍 ANÁLISIS: Muchos drops pero 0 ECN - posible tráfico UDP" << std::endl;
+      }
+      if (ecnMarks > 0) {
+        std::cout << "  ✅ ECN activo - tráfico TCP detectando congestión" << std::endl;
+      }
       
       totalEcnMarks += ecnMarks;
       totalDrops += stats.nTotalDroppedPackets;
@@ -74,6 +97,12 @@ void MeasureEcnStatistics()
   } else {
     std::cout << "⚠️  ECN no detectado" << std::endl;
   }
+  
+  // Explicación del comportamiento
+  std::cout << "\n💡 EXPLICACIÓN:" << std::endl;
+  std::cout << "- Cola 2 (UDP flood): Solo drops, no ECN (UDP no responde a ECN)" << std::endl;
+  std::cout << "- Cola 8 (Core link): ECN + drops (tráfico TCP mixto)" << std::endl;
+  std::cout << "- ECN funciona solo en TCP que puede reaccionar a la señal" << std::endl;
 }
 
 int main(int argc, char *argv[])
