@@ -104,14 +104,24 @@ void PrintQueueStats()
       std::cout << "  - Total encolados: " << stats.nTotalEnqueuedPackets << std::endl;
       std::cout << "  - Total descartados: " << stats.nTotalDroppedPackets << std::endl;
       
-      // Buscar marcas ECN en el mapa de estadísticas
-      auto it = stats.nMarkedPackets.find("Ecn mark");
-      if (it != stats.nMarkedPackets.end()) {
-        std::cout << "  - Marcas ECN: " << it->second << std::endl;
-        totalMarks += it->second;
-      } else {
-        std::cout << "  - Marcas ECN: 0" << std::endl;
+      // DEBUGGING DETALLADO DE ECN
+      std::cout << "  - Marcas ECN encontradas:" << std::endl;
+      for (const auto& pair : stats.nMarkedPackets) {
+        std::cout << "    * " << pair.first << ": " << pair.second << std::endl;
       }
+      
+      // Buscar marcas ECN en todas las variantes posibles
+      uint64_t ecnMarks = 0;
+      auto it1 = stats.nMarkedPackets.find("Ecn mark");
+      auto it2 = stats.nMarkedPackets.find("ECN mark");
+      auto it3 = stats.nMarkedPackets.find("ecn mark");
+      
+      if (it1 != stats.nMarkedPackets.end()) ecnMarks += it1->second;
+      if (it2 != stats.nMarkedPackets.end()) ecnMarks += it2->second;
+      if (it3 != stats.nMarkedPackets.end()) ecnMarks += it3->second;
+      
+      std::cout << "  - TOTAL Marcas ECN: " << ecnMarks << std::endl;
+      totalMarks += ecnMarks;
       
       totalDropsAll += stats.nTotalDroppedPackets;
       totalEnqueuesAll += stats.nTotalEnqueuedPackets;
@@ -145,15 +155,21 @@ int main(int argc, char *argv[])
   std::cout << "✓ ECN habilitado en TCP" << std::endl;
   std::cout << "✓ Logging habilitado para debug" << std::endl;
 
-  // 1. CONFIGURACIÓN DE PROTOCOLO TCP 
+  // 1. CONFIGURACIÓN DE PROTOCOLO TCP CON ECN
   Config::SetDefault("ns3::TcpL4Protocol::SocketType", StringValue("ns3::TcpNewReno"));
   
-  // Configurar buffers TCP más grandes para mejor rendimiento
-  Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(131072));
-  Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(131072));
+  // Configurar buffers TCP MÁS PEQUEÑOS para aumentar presión
+  Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(8192));   // Buffer pequeño
+  Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(8192));   // Buffer pequeño
   Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(1460));
   
-  // NOTA: ECN se configurará directamente en los sockets más adelante
+  // CONFIGURACIÓN ECN AGRESIVA EN TCP
+  Config::SetDefault("ns3::TcpSocketBase::UseEcn", StringValue("On"));
+  
+  // Configuraciones adicionales para ECN
+  Config::SetDefault("ns3::TcpL4Protocol::SocketType", StringValue("ns3::TcpNewReno"));
+  
+  std::cout << "🔥 ECN ULTRA-AGRESIVO configurado en TCP + buffers pequeños" << std::endl;
 
   // 2. CREACIÓN DE TOPOLOGÍA
   // Fat-Tree simplificado: 4 hosts + 2 switches (normalmente sería más complejo)
@@ -169,22 +185,26 @@ int main(int argc, char *argv[])
   stack.Install(hosts);
   stack.Install(switches);
 
-  // 4. CONFIGURACIÓN DE ENLACES FÍSICOS
-  // Point-to-Point: enlaces dedicados entre cada par de nodos
+  // 4. CONFIGURACIÓN DE ENLACES PARA CONGESTIÓN CONTROLADA
+  // Point-to-Point: enlaces rápidos pero con colas pequeñas para forzar marcado ECN
   PointToPointHelper p2p;
-  p2p.SetDeviceAttribute("DataRate", StringValue("10Mbps"));    // Capacidad limitada para forzar congestión
-  p2p.SetChannelAttribute("Delay", StringValue("2ms"));        // Latencia de propagación
+  p2p.SetDeviceAttribute("DataRate", StringValue("5Mbps"));      // Enlace rápido para permitir tráfico
+  p2p.SetChannelAttribute("Delay", StringValue("5ms"));          // Latencia moderada
+  
+  std::cout << "🔥 Enlaces configurados para ECN: 5Mbps, 5ms delay" << std::endl;
 
-  // 5. CONFIGURACIÓN DE COLAS CON ECN - PARÁMETROS BALANCEADOS
+  // 5. CONFIGURACIÓN EXTREMA PARA FORZAR MARCADO ECN
   TrafficControlHelper tchRed;
   tchRed.SetRootQueueDisc("ns3::RedQueueDisc",
-                          "MinTh", DoubleValue(5),      // Menos agresivo
-                          "MaxTh", DoubleValue(15),     // Menos agresivo
-                          "MaxSize", QueueSizeValue(QueueSize("30p")), // Cola moderada
-                          "UseEcn", BooleanValue(true),
-                          "QW", DoubleValue(0.002),     
-                          "Gentle", BooleanValue(true), // Gentle RED habilitado
-                          "UseHardDrop", BooleanValue(false)); // Evitar drops prematuros
+                          "MinTh", DoubleValue(1),      // ULTRA EXTREMO - Marcado inmediato
+                          "MaxTh", DoubleValue(2),      // ULTRA EXTREMO - Rango mínimo
+                          "MaxSize", QueueSizeValue(QueueSize("5p")), // Cola ultra pequeña
+                          "UseEcn", BooleanValue(true), // Habilitar ECN
+                          "QW", DoubleValue(1.0),       // PESO MÁXIMO - Respuesta inmediata
+                          "Gentle", BooleanValue(true), // Gentle RED ACTIVO
+                          "UseHardDrop", BooleanValue(false)); // NO drops duros - solo marcado
+  
+  std::cout << "� RED EXTREMO para FORZAR ECN: MinTh=1, MaxTh=2, QueueSize=5p, QW=1.0" << std::endl;
 
   // 6. CREACIÓN DE CONEXIONES FÍSICAS
   // Topología Fat-Tree:
@@ -271,7 +291,7 @@ int main(int argc, char *argv[])
   // CLIENTE IPERF3 CON RÁFAGAS: Host1 -> Host2 (imitando iperf3 con intervalos)
   OnOffHelper iperf3Burst("ns3::TcpSocketFactory", 
                          InetSocketAddress(ifaceHost2.GetAddress(0), iperf3Port2));
-  iperf3Burst.SetConstantRate(DataRate("40Mbps"));  // 4x capacidad para crear ráfagas
+  iperf3Burst.SetConstantRate(DataRate("20Mbps"));  // 4x capacidad del enlace de 5Mbps para congestión severa
   iperf3Burst.SetAttribute("PacketSize", UintegerValue(1460));
   
   // Ráfagas tipo iperf3: ON durante 2s, OFF durante 1s (simulando intervalos de reporte)
@@ -285,14 +305,31 @@ int main(int argc, char *argv[])
   // TRÁFICO DE FONDO ADICIONAL: Simula múltiples flujos iperf3 paralelos
   OnOffHelper backgroundTraffic("ns3::TcpSocketFactory", 
                                InetSocketAddress(ifaceHost3.GetAddress(0), iperf3Port));
-  backgroundTraffic.SetConstantRate(DataRate("20Mbps"));  // Tráfico de fondo
+  backgroundTraffic.SetConstantRate(DataRate("15Mbps"));  // 3x capacidad para congestión garantizada
   backgroundTraffic.SetAttribute("PacketSize", UintegerValue(1460));
   backgroundTraffic.SetAttribute("OnTime", StringValue("ns3::ExponentialRandomVariable[Mean=3.0]"));
   backgroundTraffic.SetAttribute("OffTime", StringValue("ns3::ExponentialRandomVariable[Mean=1.0]"));
 
-  ApplicationContainer backgroundApps = backgroundTraffic.Install(hosts.Get(1));
-  backgroundApps.Start(Seconds(3.0));
-  backgroundApps.Stop(Seconds(8.0));
+  // TRÁFICO UDP AGRESIVO PARA FORZAR CONGESTIÓN (no se auto-regula como TCP)
+  OnOffHelper udpFlood("ns3::UdpSocketFactory", 
+                       InetSocketAddress(ifaceHost3.GetAddress(0), 9999));
+  udpFlood.SetConstantRate(DataRate("50Mbps"));  // 10x capacidad del enlace - BRUTAL
+  udpFlood.SetAttribute("PacketSize", UintegerValue(1024));
+  udpFlood.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=8.0]"));
+  udpFlood.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0.1]"));
+
+  ApplicationContainer udpApps = udpFlood.Install(hosts.Get(0));
+  udpApps.Start(Seconds(1.5));
+  udpApps.Stop(Seconds(9.5));
+
+  // Servidor UDP para recibir el tráfico
+  PacketSinkHelper udpSink("ns3::UdpSocketFactory",
+                          InetSocketAddress(Ipv4Address::GetAny(), 9999));
+  ApplicationContainer udpSinkApps = udpSink.Install(hosts.Get(3));
+  udpSinkApps.Start(Seconds(0.5));
+  udpSinkApps.Stop(Seconds(12.0));
+  
+  std::cout << "💀 TRÁFICO UDP BRUTAL añadido: 50Mbps durante 8s" << std::endl;
 
   // 9. MONITOREO ESTILO IPERF3 Y COLAS RED
   // =====================================
