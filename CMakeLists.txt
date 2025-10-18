@@ -39,6 +39,7 @@ target_link_libraries(fattree_ecn_clean
   ns3.45-applications-default
   ns3.45-point-to-point-default
   ns3.45-traffic-control-default
+  ns3.45-flow-monitor-default
 )
 
 # Flags de compilación
