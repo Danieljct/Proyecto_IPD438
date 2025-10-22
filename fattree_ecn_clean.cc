@@ -218,9 +218,52 @@ public:
              return;
         }
         
-        uint32_t startWindow = m_lastProcessedTimeUs / WAVE_WINDOW_US;
-        uint32_t endWindow = analysisBoundaryUs / WAVE_WINDOW_US;
-        uint32_t numWindows = endWindow - startWindow;
+    uint32_t endWindow = analysisBoundaryUs / WAVE_WINDOW_US;
+    // Analyze the last CURVE_DURATION_MS milliseconds worth of windows
+    uint32_t startWindow = (endWindow >= NUM_WINDOWS_PER_CURVE) ? (endWindow - NUM_WINDOWS_PER_CURVE) : 0;
+    uint32_t numWindows = endWindow - startWindow;
+
+    // Diagnostics: print timing and window range used for analysis
+    std::cout << "[DIAG] Simulator::Now()=" << Simulator::Now().GetMilliSeconds() << "ms ";
+    std::cout << "startWindow=" << startWindow << " endWindow=" << endWindow << " ";
+    std::cout << "m_flowData.size=" << m_flowData.size() << std::endl;
+
+    // Compute global min/max window index present in m_flowData (sample up to 50 flows)
+    bool foundAny = false;
+    uint32_t globalMin = UINT32_MAX;
+    uint32_t globalMax = 0;
+    size_t sampled = 0;
+    for (auto it = m_flowData.begin(); it != m_flowData.end() && sampled < 50; ++it, ++sampled) {
+        const auto &mapRef = it->second;
+        if (!mapRef.empty()) {
+            foundAny = true;
+            uint32_t localMin = mapRef.begin()->first;
+            uint32_t localMax = mapRef.rbegin()->first;
+            if (localMin < globalMin) globalMin = localMin;
+            if (localMax > globalMax) globalMax = localMax;
+        }
+    }
+    if (foundAny) {
+        std::cout << "[DIAG] observed windowIndex range (sampled up to 50 flows): min=" << globalMin << " max=" << globalMax << std::endl;
+    } else {
+        std::cout << "[DIAG] no windowIndex keys observed in sampled flows" << std::endl;
+    }
+
+    // Adjust analysis window to align with observed data: if we've advanced past the last
+    // observed window (e.g., traffic ended) then cap endWindow to the last observed + 1
+    // and compute a sensible startWindow of NUM_WINDOWS_PER_CURVE length.
+    if (foundAny) {
+        uint32_t observedLastPlusOne = globalMax + 1;
+        uint32_t effectiveEnd = std::min(endWindow, observedLastPlusOne);
+        uint32_t effectiveStart = (effectiveEnd >= NUM_WINDOWS_PER_CURVE) ? (effectiveEnd - NUM_WINDOWS_PER_CURVE) : 0;
+        if (effectiveStart != startWindow || effectiveEnd != endWindow) {
+            std::cout << "[DIAG] adjusting analysis window to observed data: old=[" << startWindow << "," << endWindow << ") ";
+            std::cout << "new=[" << effectiveStart << "," << effectiveEnd << ") numWindows=" << (effectiveEnd - effectiveStart) << std::endl;
+            startWindow = effectiveStart;
+            endWindow = effectiveEnd;
+            numWindows = endWindow - startWindow;
+        }
+    }
         if (numWindows == 0) {
              Simulator::Schedule(MilliSeconds(CURVE_DURATION_MS), &WaveSketchAgent::CompressAndAnalyze, this);
              return;
@@ -231,7 +274,20 @@ public:
         std::cout << " Tiempo Sim: " << Simulator::Now().GetSeconds() << "s | Ventanas Analizadas: ["
                   << startWindow << " a " << endWindow - 1 << "]" << std::endl;
         std::cout << std::string(70, '=') << std::endl;
-        
+        // DEBUG DUMP: mostrar una muestra de m_flowData para entender qué ventanas están presentes
+        std::cout << "[DEBUG] m_flowData size: " << m_flowData.size() << " (mostrar hasta 10 flows)" << std::endl;
+        int dbgFlows = 0;
+        for (auto const& [flowIdDbg, timeSeriesDbg] : m_flowData) {
+            if (dbgFlows++ >= 10) break;
+            std::cout << "  flow=" << flowIdDbg << " entries=" << timeSeriesDbg.size() << " -> ";
+            int dbgPairs = 0;
+            for (auto const& [w, c] : timeSeriesDbg) {
+                if (dbgPairs++ >= 10) break;
+                std::cout << "[w=" << w << ":" << c << "]";
+            }
+            std::cout << std::endl;
+        }
+
         uint32_t totalFlowsCompressed = 0;
 
         for (auto const& [flowId, timeSeries] : m_flowData) {
