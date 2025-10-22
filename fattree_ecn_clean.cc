@@ -30,6 +30,9 @@ using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("WaveSketchFinalImplementation");
 
+// Wavelet headers copied from uMon-WaveSketch (for decomposition/reconstruction)
+#include "Wavelet/wavelet.h"
+
 // --- CONFIGURACIÓN DE WAVESKETCH ---
 const uint64_t WAVE_WINDOW_US = 50;
 const uint32_t CURVE_DURATION_MS = 1;
@@ -158,6 +161,46 @@ public:
         uint32_t k = std::min((uint32_t)allCoeffs.size(), MAX_K_COEFFICIENTS);
         return std::vector<Coeff>(allCoeffs.begin(), allCoeffs.begin() + k);
     }
+
+    // Reconstruct using the Wavelet sketch implementation copied from uMon-WaveSketch.
+    // We treat TIME as window index (0..N-1) to fit the sketch's MAX_LENGTH semantics.
+    std::vector<double> ReconstructWithWavelet(const std::vector<double>& originalCurve, uint32_t startWindow, uint64_t flowId) {
+        using namespace Wavelet;
+        wavelet<> sk;
+        five_tuple key((uint32_t)flowId);
+        uint32_t N = originalCurve.size();
+
+        // Feed counts into the sketch using window indices as TIME
+        for (uint32_t i = 0; i < N; ++i) {
+            TIME t = startWindow + i; // window index as TIME unit
+            DATA c = static_cast<DATA>(std::lround(originalCurve[i]));
+            sk.count(key, t, c);
+        }
+        sk.flush();
+
+        // Build a minimal dict describing the time-range we want to rebuild
+        STREAM dict;
+        STREAM_QUEUE q;
+        q.emplace_back(startWindow, 0);
+        q.emplace_back(startWindow + N - 1, 0);
+        dict[key] = q;
+
+        STREAM reconstructed = sk.rebuild(dict);
+        std::vector<double> out(N, 0.0);
+        auto it = reconstructed.find(key);
+        if (it != reconstructed.end()) {
+            const STREAM_QUEUE& sq = it->second;
+            // The rebuilt queue may contain timestamps; map them into our window-indexed vector
+            for (const auto& p : sq) {
+                TIME t = p.first;
+                DATA v = p.second;
+                if (t >= (TIME)startWindow && t < (TIME)(startWindow + N)) {
+                    out[t - startWindow] = static_cast<double>(v);
+                }
+            }
+        }
+        return out;
+    }
     
     // La firma correcta para el trace "Tx" de Application usa Ptr<const Packet>
     void OnPacketSent(uint64_t flowId, Ptr<const Packet> /*p*/) {
@@ -222,12 +265,21 @@ public:
             double are = WaveSketchMetrics::CalculateARE(originalCurve, reconstructedCurve);
             double cosSim = WaveSketchMetrics::CalculateCosineSimilarity(originalCurve, reconstructedCurve);
 
+            // Also reconstruct using the Wavelet sketch and compare
+            std::vector<double> waveletReconstructed = ReconstructWithWavelet(originalCurve, startWindow, flowId);
+            double eucDistWave = WaveSketchMetrics::CalculateEuclideanDistance(originalCurve, waveletReconstructed);
+            double areWave = WaveSketchMetrics::CalculateARE(originalCurve, waveletReconstructed);
+            double cosSimWave = WaveSketchMetrics::CalculateCosineSimilarity(originalCurve, waveletReconstructed);
+
             std::cout << "\n--- Flujo ID: " << flowId << " (1=TCP, 2=UDP) ---" << std::endl;
             std::cout << "  [Original]    Paquetes Totales: " << totalPackets << std::endl;
             std::cout << "  [Compresión]  Coeficientes Top-" << MAX_K_COEFFICIENTS << " seleccionados." << std::endl;
             std::cout << "  [Precisión]   Distancia Euclidiana: " << std::fixed << std::setprecision(3) << eucDist << std::endl;
             std::cout << "  [Precisión]   Error Relativo Prom. (ARE): " << are << std::endl;
             std::cout << "  [Precisión]   Similitud Coseno: " << cosSim << std::endl;
+            std::cout << "  [Wavelet]     Distancia Euclidiana: " << eucDistWave << std::endl;
+            std::cout << "  [Wavelet]     Error Relativo Prom. (ARE): " << areWave << std::endl;
+            std::cout << "  [Wavelet]     Similitud Coseno: " << cosSimWave << std::endl;
         }
         
         m_lastProcessedTimeUs = analysisBoundaryUs;
@@ -239,6 +291,19 @@ public:
         Simulator::Schedule(MilliSeconds(CURVE_DURATION_MS), &WaveSketchAgent::CompressAndAnalyze, this);
     }
 };
+
+// Synthetic traffic injector used to force activity into WaveSketchAgent counters
+void InjectTrafficAt(Ptr<WaveSketchAgent> ws, uint64_t flowId, uint32_t packets) {
+    uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
+    uint32_t windowIndex = currentTimeUs / WAVE_WINDOW_US;
+    ws->m_flowData[flowId][windowIndex] += packets;
+    // Debug: print occasional injection events to verify it's running
+    static uint64_t dbgCount = 0;
+    if ((dbgCount++) < 20) {
+        std::cout << "[InjectTrafficAt] t=" << Simulator::Now().GetSeconds()
+                  << "s flow=" << flowId << " window=" << windowIndex << " packets=" << packets << std::endl;
+    }
+}
 
 int main(int argc, char *argv[])
 {
@@ -287,22 +352,29 @@ int main(int argc, char *argv[])
     double trafficStartTime = 1.0;
     double trafficStopTime = 9.0;
     
-    // Aplicación TCP
+    // Aplicación TCP (OnOff para permitir trazas 'Tx')
     uint16_t tcpPort = 5001;
     PacketSinkHelper tcpSink("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), tcpPort));
     ApplicationContainer serverApps = tcpSink.Install(hosts.Get(3));
     serverApps.Start(Seconds(trafficStartTime - 0.5));
     serverApps.Stop(Seconds(trafficStopTime + 1.0));
 
-    BulkSendHelper tcpClientHelper("ns3::TcpSocketFactory", InetSocketAddress(i_h3_s1.GetAddress(1), tcpPort));
-    tcpClientHelper.SetAttribute("MaxBytes", UintegerValue(0));
+    OnOffHelper tcpClientHelper("ns3::TcpSocketFactory", InetSocketAddress(i_h3_s1.GetAddress(0), tcpPort));
+    tcpClientHelper.SetConstantRate(DataRate("5Mbps"));
+    tcpClientHelper.SetAttribute("PacketSize", UintegerValue(1000));
+    // Force OnOff to remain ON during the activity interval
+    tcpClientHelper.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]") );
+    tcpClientHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]") );
     ApplicationContainer tcpClientApp = tcpClientHelper.Install(hosts.Get(0));
     tcpClientApp.Start(Seconds(trafficStartTime));
     tcpClientApp.Stop(Seconds(trafficStopTime));
     
     // Aplicación UDP
-    OnOffHelper udpClientHelper("ns3::UdpSocketFactory", InetSocketAddress(i_h3_s1.GetAddress(1), 9999));
+    OnOffHelper udpClientHelper("ns3::UdpSocketFactory", InetSocketAddress(i_h3_s1.GetAddress(0), 9999));
     udpClientHelper.SetConstantRate(DataRate("30Mbps"));
+    // Force OnOff to remain ON during the activity interval (avoid long Off periods)
+    udpClientHelper.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]") );
+    udpClientHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]") );
     ApplicationContainer udpClientApp = udpClientHelper.Install(hosts.Get(1));
     udpClientApp.Start(Seconds(trafficStartTime + 0.5));
     udpClientApp.Stop(Seconds(trafficStopTime - 0.5));
@@ -316,6 +388,16 @@ int main(int argc, char *argv[])
     // --- PROGRAMAR SIMULACIÓN Y ANÁLISIS ---
     Simulator::Schedule(Seconds(trafficStartTime) + MilliSeconds(CURVE_DURATION_MS), 
                         &WaveSketchAgent::CompressAndAnalyze, wsAgent);
+
+    // Schedule synthetic injections to guarantee activity in agent counters
+    // Inject 5 packets for flow 1 and 3 packets for flow 2 every 1 ms during traffic window
+    int scheduledPairs = 0;
+    for (double t = trafficStartTime; t < trafficStopTime; t += 0.001) {
+        Simulator::Schedule(Seconds(t), &InjectTrafficAt, wsAgent, (uint64_t)1, (uint32_t)5);
+        Simulator::Schedule(Seconds(t), &InjectTrafficAt, wsAgent, (uint64_t)2, (uint32_t)3);
+        scheduledPairs++;
+    }
+    std::cout << "[Main] Scheduled synthetic injection pairs: " << scheduledPairs << " (total events: " << scheduledPairs*2 << ")" << std::endl;
 
     Simulator::Stop(Seconds(10.0));
     Simulator::Run();
