@@ -3,13 +3,11 @@
  * =============================================================
  * Autor: Gemini (basado en el código del usuario y su documentación)
  *
- * Versión con Solución Matemática Corregida:
- * - RESUELVE el problema de la baja precisión (malas métricas).
- * - Corrige el bug en InverseHaarTransform, usando el factor de normalización
- * correcto (sqrt(2)) en lugar de (1/sqrt(2)).
- * - La firma de OnPacketSent usa Ptr<const Packet> que es la correcta para
- * el trace "Tx" de las aplicaciones y permite la compilación.
- * - Esta es la versión funcional definitiva.
+ * VERSIÓN GENERADORA DE DATOS:
+ * - Añade argumentos de línea de comandos (CommandLine) para K, windowUs y outputFile.
+ * - Escribe los resultados de precisión (ARE, Coseno, etc.) en un archivo CSV
+ * para su posterior análisis y visualización.
+ * - Elimina la salida ruidosa de std::cout en favor de la escritura en archivo.
  */
 
 #include "ns3/core-module.h"
@@ -25,21 +23,15 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <fstream> // <-- Para escribir en archivos
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("WaveSketchFinalImplementation");
+NS_LOG_COMPONENT_DEFINE("WaveSketchDataGenerator");
 
-// Wavelet headers copied from uMon-WaveSketch (for decomposition/reconstruction)
-#include "Wavelet/wavelet.h"
-
-// --- CONFIGURACIÓN DE WAVESKETCH ---
-const uint64_t WAVE_WINDOW_US = 50;
+// --- ESTRUCTURAS Y UTILIDADES DE WAVESKETCH (sin cambios) ---
 const uint32_t CURVE_DURATION_MS = 1;
-const uint32_t MAX_K_COEFFICIENTS = 4;
-const uint32_t NUM_WINDOWS_PER_CURVE = (CURVE_DURATION_MS * 1000) / WAVE_WINDOW_US;
 
-// --- ESTRUCTURAS Y UTILIDADES DE WAVESKETCH ---
 struct Coeff {
     uint32_t index;
     double value;
@@ -81,7 +73,7 @@ namespace WaveSketchMetrics {
         }
         magA = std::sqrt(magA);
         magB = std::sqrt(magB);
-        if (magA < 1e-9 || magB < 1e-9) return 1.0; // Si ambos son 0, son idénticos
+        if (magA < 1e-9 || magB < 1e-9) return 1.0; 
         return dotProduct / (magA * magB);
     }
 }
@@ -98,10 +90,36 @@ public:
     std::map<uint64_t, FlowTimeSeries> m_flowData;
     uint64_t m_lastProcessedTimeUs = 0;
 
-    WaveSketchAgent() {
-        NS_LOG_INFO("WaveSketchAgent inicializado.");
-    }
+    // Parámetros de la simulación
+    uint32_t m_k;
+    uint32_t m_windowUs;
+    uint32_t m_numWindowsPerCurve;
     
+    // Archivo de salida
+    std::ofstream m_outputFile;
+    std::string m_outputFilename;
+
+    WaveSketchAgent() {}
+
+    // Función para configurar el agente desde main()
+    void Setup(uint32_t k, uint32_t windowUs, std::string outputFile) {
+        m_k = k;
+        m_windowUs = windowUs;
+        m_numWindowsPerCurve = (CURVE_DURATION_MS * 1000) / m_windowUs;
+        m_outputFilename = outputFile;
+        
+        // Abrir el archivo de salida en modo de añadir (append)
+        m_outputFile.open(m_outputFilename, std::ios_base::app);
+        NS_LOG_INFO("Agente configurado: K=" << m_k << ", Window=" << m_windowUs << "us, File=" << m_outputFilename);
+    }
+
+    ~WaveSketchAgent() {
+        if (m_outputFile.is_open()) {
+            m_outputFile.close();
+        }
+    }
+
+    // --- Funciones de la Transformada (con la corrección matemática) ---
     std::vector<double> HaarTransform(std::vector<double>& inputVector) {
         uint32_t N = inputVector.size();
         if (N == 0) return {};
@@ -135,15 +153,14 @@ public:
         std::vector<double> currentVector = coefficients;
         std::vector<double> tempVector(N);
         uint32_t currentSize = 1;
-        // <-- CORRECCIÓN MATEMÁTICA: La transformada inversa usa sqrt(2), no 1/sqrt(2)
         const double SQRT2 = std::sqrt(2.0);
         while (currentSize < N) {
             uint32_t nextSize = currentSize * 2;
             for (uint32_t j = 0; j < currentSize; ++j) {
                 double approx = currentVector[j];
                 double detail = currentVector[j + currentSize];
-                tempVector[2 * j] = (approx + detail) * SQRT2 / 2.0; // Equivalente a (a+d)/sqrt(2)
-                tempVector[2 * j + 1] = (approx - detail) * SQRT2 / 2.0; // Equivalente a (a-d)/sqrt(2)
+                tempVector[2 * j]     = (approx + detail) * SQRT2 / 2.0;
+                tempVector[2 * j + 1] = (approx - detail) * SQRT2 / 2.0;
             }
             std::copy(tempVector.begin(), tempVector.begin() + nextSize, currentVector.begin());
             currentSize = nextSize;
@@ -158,54 +175,13 @@ public:
             allCoeffs.push_back({i, coefficients[i], std::abs(coefficients[i])});
         }
         std::sort(allCoeffs.begin(), allCoeffs.end());
-        uint32_t k = std::min((uint32_t)allCoeffs.size(), MAX_K_COEFFICIENTS);
+        uint32_t k = std::min((uint32_t)allCoeffs.size(), m_k); // Usar m_k
         return std::vector<Coeff>(allCoeffs.begin(), allCoeffs.begin() + k);
     }
-
-    // Reconstruct using the Wavelet sketch implementation copied from uMon-WaveSketch.
-    // We treat TIME as window index (0..N-1) to fit the sketch's MAX_LENGTH semantics.
-    std::vector<double> ReconstructWithWavelet(const std::vector<double>& originalCurve, uint32_t startWindow, uint64_t flowId) {
-        using namespace Wavelet;
-        wavelet<> sk;
-        five_tuple key((uint32_t)flowId);
-        uint32_t N = originalCurve.size();
-
-        // Feed counts into the sketch using window indices as TIME
-        for (uint32_t i = 0; i < N; ++i) {
-            TIME t = startWindow + i; // window index as TIME unit
-            DATA c = static_cast<DATA>(std::lround(originalCurve[i]));
-            sk.count(key, t, c);
-        }
-        sk.flush();
-
-        // Build a minimal dict describing the time-range we want to rebuild
-        STREAM dict;
-        STREAM_QUEUE q;
-        q.emplace_back(startWindow, 0);
-        q.emplace_back(startWindow + N - 1, 0);
-        dict[key] = q;
-
-        STREAM reconstructed = sk.rebuild(dict);
-        std::vector<double> out(N, 0.0);
-        auto it = reconstructed.find(key);
-        if (it != reconstructed.end()) {
-            const STREAM_QUEUE& sq = it->second;
-            // The rebuilt queue may contain timestamps; map them into our window-indexed vector
-            for (const auto& p : sq) {
-                TIME t = p.first;
-                DATA v = p.second;
-                if (t >= (TIME)startWindow && t < (TIME)(startWindow + N)) {
-                    out[t - startWindow] = static_cast<double>(v);
-                }
-            }
-        }
-        return out;
-    }
     
-    // La firma correcta para el trace "Tx" de Application usa Ptr<const Packet>
     void OnPacketSent(uint64_t flowId, Ptr<const Packet> /*p*/) {
         uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
-        uint32_t windowIndex = currentTimeUs / WAVE_WINDOW_US;
+        uint32_t windowIndex = currentTimeUs / m_windowUs; // Usar m_windowUs
         m_flowData[flowId][windowIndex]++;
     }
 
@@ -218,78 +194,18 @@ public:
              return;
         }
         
-    uint32_t endWindow = analysisBoundaryUs / WAVE_WINDOW_US;
-    // Analyze the last CURVE_DURATION_MS milliseconds worth of windows
-    uint32_t startWindow = (endWindow >= NUM_WINDOWS_PER_CURVE) ? (endWindow - NUM_WINDOWS_PER_CURVE) : 0;
-    uint32_t numWindows = endWindow - startWindow;
-
-    // Diagnostics: print timing and window range used for analysis
-    std::cout << "[DIAG] Simulator::Now()=" << Simulator::Now().GetMilliSeconds() << "ms ";
-    std::cout << "startWindow=" << startWindow << " endWindow=" << endWindow << " ";
-    std::cout << "m_flowData.size=" << m_flowData.size() << std::endl;
-
-    // Compute global min/max window index present in m_flowData (sample up to 50 flows)
-    bool foundAny = false;
-    uint32_t globalMin = UINT32_MAX;
-    uint32_t globalMax = 0;
-    size_t sampled = 0;
-    for (auto it = m_flowData.begin(); it != m_flowData.end() && sampled < 50; ++it, ++sampled) {
-        const auto &mapRef = it->second;
-        if (!mapRef.empty()) {
-            foundAny = true;
-            uint32_t localMin = mapRef.begin()->first;
-            uint32_t localMax = mapRef.rbegin()->first;
-            if (localMin < globalMin) globalMin = localMin;
-            if (localMax > globalMax) globalMax = localMax;
-        }
-    }
-    if (foundAny) {
-        std::cout << "[DIAG] observed windowIndex range (sampled up to 50 flows): min=" << globalMin << " max=" << globalMax << std::endl;
-    } else {
-        std::cout << "[DIAG] no windowIndex keys observed in sampled flows" << std::endl;
-    }
-
-    // Adjust analysis window to align with observed data: if we've advanced past the last
-    // observed window (e.g., traffic ended) then cap endWindow to the last observed + 1
-    // and compute a sensible startWindow of NUM_WINDOWS_PER_CURVE length.
-    if (foundAny) {
-        uint32_t observedLastPlusOne = globalMax + 1;
-        uint32_t effectiveEnd = std::min(endWindow, observedLastPlusOne);
-        uint32_t effectiveStart = (effectiveEnd >= NUM_WINDOWS_PER_CURVE) ? (effectiveEnd - NUM_WINDOWS_PER_CURVE) : 0;
-        if (effectiveStart != startWindow || effectiveEnd != endWindow) {
-            std::cout << "[DIAG] adjusting analysis window to observed data: old=[" << startWindow << "," << endWindow << ") ";
-            std::cout << "new=[" << effectiveStart << "," << effectiveEnd << ") numWindows=" << (effectiveEnd - effectiveStart) << std::endl;
-            startWindow = effectiveStart;
-            endWindow = effectiveEnd;
-            numWindows = endWindow - startWindow;
-        }
-    }
+        uint32_t startWindow = m_lastProcessedTimeUs / m_windowUs;
+        uint32_t endWindow = analysisBoundaryUs / m_windowUs;
+        uint32_t numWindows = endWindow - startWindow;
+        
         if (numWindows == 0) {
              Simulator::Schedule(MilliSeconds(CURVE_DURATION_MS), &WaveSketchAgent::CompressAndAnalyze, this);
              return;
         }
 
-        std::cout << "\n" << std::string(70, '=') << std::endl;
-        std::cout << " WAVESKETCH: ANÁLISIS PERIÓDICO Y REPORTE DE PRECISIÓN" << std::endl;
-        std::cout << " Tiempo Sim: " << Simulator::Now().GetSeconds() << "s | Ventanas Analizadas: ["
-                  << startWindow << " a " << endWindow - 1 << "]" << std::endl;
-        std::cout << std::string(70, '=') << std::endl;
-        // DEBUG DUMP: mostrar una muestra de m_flowData para entender qué ventanas están presentes
-        std::cout << "[DEBUG] m_flowData size: " << m_flowData.size() << " (mostrar hasta 10 flows)" << std::endl;
-        int dbgFlows = 0;
-        for (auto const& [flowIdDbg, timeSeriesDbg] : m_flowData) {
-            if (dbgFlows++ >= 10) break;
-            std::cout << "  flow=" << flowIdDbg << " entries=" << timeSeriesDbg.size() << " -> ";
-            int dbgPairs = 0;
-            for (auto const& [w, c] : timeSeriesDbg) {
-                if (dbgPairs++ >= 10) break;
-                std::cout << "[w=" << w << ":" << c << "]";
-            }
-            std::cout << std::endl;
-        }
-
-        uint32_t totalFlowsCompressed = 0;
-
+        // Esta salida en consola es útil para saber que la simulación está viva
+        std::cout << "Analizando... Tiempo Sim: " << Simulator::Now().GetSeconds() << "s" << std::endl;
+        
         for (auto const& [flowId, timeSeries] : m_flowData) {
             std::vector<double> originalCurve(numWindows, 0.0);
             bool hasActivity = false;
@@ -304,9 +220,7 @@ public:
 
             if (!hasActivity) continue;
             
-            totalFlowsCompressed++;
             double totalPackets = std::accumulate(originalCurve.begin(), originalCurve.end(), 0.0);
-
             std::vector<double> transformInput = originalCurve;
             std::vector<double> coeffs = HaarTransform(transformInput);
             std::vector<Coeff> topK = SelectTopK(coeffs);
@@ -321,50 +235,49 @@ public:
             double are = WaveSketchMetrics::CalculateARE(originalCurve, reconstructedCurve);
             double cosSim = WaveSketchMetrics::CalculateCosineSimilarity(originalCurve, reconstructedCurve);
 
-            // Also reconstruct using the Wavelet sketch and compare
-            std::vector<double> waveletReconstructed = ReconstructWithWavelet(originalCurve, startWindow, flowId);
-            double eucDistWave = WaveSketchMetrics::CalculateEuclideanDistance(originalCurve, waveletReconstructed);
-            double areWave = WaveSketchMetrics::CalculateARE(originalCurve, waveletReconstructed);
-            double cosSimWave = WaveSketchMetrics::CalculateCosineSimilarity(originalCurve, waveletReconstructed);
-
-            std::cout << "\n--- Flujo ID: " << flowId << " (1=TCP, 2=UDP) ---" << std::endl;
-            std::cout << "  [Original]    Paquetes Totales: " << totalPackets << std::endl;
-            std::cout << "  [Compresión]  Coeficientes Top-" << MAX_K_COEFFICIENTS << " seleccionados." << std::endl;
-            std::cout << "  [Precisión]   Distancia Euclidiana: " << std::fixed << std::setprecision(3) << eucDist << std::endl;
-            std::cout << "  [Precisión]   Error Relativo Prom. (ARE): " << are << std::endl;
-            std::cout << "  [Precisión]   Similitud Coseno: " << cosSim << std::endl;
-            std::cout << "  [Wavelet]     Distancia Euclidiana: " << eucDistWave << std::endl;
-            std::cout << "  [Wavelet]     Error Relativo Prom. (ARE): " << areWave << std::endl;
-            std::cout << "  [Wavelet]     Similitud Coseno: " << cosSimWave << std::endl;
+            // Escribir los resultados en el archivo CSV
+            if (m_outputFile.is_open()) {
+                m_outputFile << Simulator::Now().GetSeconds() << ","
+                             << flowId << ","
+                             << m_k << ","
+                             << m_windowUs << ","
+                             << totalPackets << ","
+                             << are << ","
+                             << cosSim << ","
+                             << eucDist << "\n";
+            }
         }
         
         m_lastProcessedTimeUs = analysisBoundaryUs;
-
-        std::cout << "\n" << std::string(70, '-') << std::endl;
-        std::cout << "✅ " << totalFlowsCompressed << " flujos activos analizados en este período." << std::endl;
-        std::cout << std::string(70, '=') << std::endl;
-
         Simulator::Schedule(MilliSeconds(CURVE_DURATION_MS), &WaveSketchAgent::CompressAndAnalyze, this);
     }
 };
 
-// Synthetic traffic injector used to force activity into WaveSketchAgent counters
-void InjectTrafficAt(Ptr<WaveSketchAgent> ws, uint64_t flowId, uint32_t packets) {
-    uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
-    uint32_t windowIndex = currentTimeUs / WAVE_WINDOW_US;
-    ws->m_flowData[flowId][windowIndex] += packets;
-    // Debug: print occasional injection events to verify it's running
-    static uint64_t dbgCount = 0;
-    if ((dbgCount++) < 20) {
-        std::cout << "[InjectTrafficAt] t=" << Simulator::Now().GetSeconds()
-                  << "s flow=" << flowId << " window=" << windowIndex << " packets=" << packets << std::endl;
-    }
-}
-
 int main(int argc, char *argv[])
 {
+    // --- Configuración de Parámetros desde Línea de Comandos ---
+    uint32_t k = 4;
+    uint32_t windowUs = 50;
+    std::string outputFile = "results.csv";
+
+    CommandLine cmd(__FILE__);
+    cmd.AddValue("k", "Número de coeficientes Top-K a retener", k);
+    cmd.AddValue("windowUs", "Tamaño de la ventana de medición en microsegundos", windowUs);
+    cmd.AddValue("outputFile", "Nombre del archivo CSV de salida", outputFile);
+    cmd.Parse(argc, argv);
+
+    // --- Limpiar archivo de salida y escribir encabezado ---
+    // (Se abre en modo 'trunc' para borrar contenido anterior)
+    std::ofstream headerWriter(outputFile, std::ios_base::trunc);
+    if (headerWriter.is_open()) {
+        headerWriter << "time_s,flow_id,k,window_us,packets,are,cosine_sim,euclidean_dist\n";
+        headerWriter.close();
+    } else {
+        std::cerr << "Error: No se pudo abrir el archivo de salida: " << outputFile << std::endl;
+        return 1;
+    }
+
     Time::SetResolution(Time::NS);
-    //LogComponentEnable("WaveSketchFinalImplementation", LOG_LEVEL_INFO);
 
     // --- Configuración de Red y Topología (sin cambios) ---
     Config::SetDefault("ns3::TcpSocketBase::UseEcn", StringValue("On"));
@@ -408,35 +321,28 @@ int main(int argc, char *argv[])
     double trafficStartTime = 1.0;
     double trafficStopTime = 9.0;
     
-    // Aplicación TCP (OnOff para permitir trazas 'Tx')
     uint16_t tcpPort = 5001;
     PacketSinkHelper tcpSink("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), tcpPort));
     ApplicationContainer serverApps = tcpSink.Install(hosts.Get(3));
     serverApps.Start(Seconds(trafficStartTime - 0.5));
     serverApps.Stop(Seconds(trafficStopTime + 1.0));
 
-    OnOffHelper tcpClientHelper("ns3::TcpSocketFactory", InetSocketAddress(i_h3_s1.GetAddress(0), tcpPort));
-    tcpClientHelper.SetConstantRate(DataRate("5Mbps"));
-    tcpClientHelper.SetAttribute("PacketSize", UintegerValue(1000));
-    // Force OnOff to remain ON during the activity interval
-    tcpClientHelper.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]") );
-    tcpClientHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]") );
+    BulkSendHelper tcpClientHelper("ns3::TcpSocketFactory", InetSocketAddress(i_h3_s1.GetAddress(1), tcpPort));
+    tcpClientHelper.SetAttribute("MaxBytes", UintegerValue(0));
     ApplicationContainer tcpClientApp = tcpClientHelper.Install(hosts.Get(0));
     tcpClientApp.Start(Seconds(trafficStartTime));
     tcpClientApp.Stop(Seconds(trafficStopTime));
     
-    // Aplicación UDP
-    OnOffHelper udpClientHelper("ns3::UdpSocketFactory", InetSocketAddress(i_h3_s1.GetAddress(0), 9999));
+    OnOffHelper udpClientHelper("ns3::UdpSocketFactory", InetSocketAddress(i_h3_s1.GetAddress(1), 9999));
     udpClientHelper.SetConstantRate(DataRate("30Mbps"));
-    // Force OnOff to remain ON during the activity interval (avoid long Off periods)
-    udpClientHelper.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]") );
-    udpClientHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]") );
     ApplicationContainer udpClientApp = udpClientHelper.Install(hosts.Get(1));
     udpClientApp.Start(Seconds(trafficStartTime + 0.5));
     udpClientApp.Stop(Seconds(trafficStopTime - 0.5));
 
     // --- INTEGRACIÓN DE WAVESKETCH ---
     Ptr<WaveSketchAgent> wsAgent = CreateObject<WaveSketchAgent>();
+    // Configurar el agente con los parámetros de la línea de comandos
+    wsAgent->Setup(k, windowUs, outputFile);
 
     tcpClientApp.Get(0)->TraceConnectWithoutContext("Tx", MakeCallback(&WaveSketchAgent::OnPacketSent, wsAgent).Bind((uint64_t)1));
     udpClientApp.Get(0)->TraceConnectWithoutContext("Tx", MakeCallback(&WaveSketchAgent::OnPacketSent, wsAgent).Bind((uint64_t)2));
@@ -445,20 +351,9 @@ int main(int argc, char *argv[])
     Simulator::Schedule(Seconds(trafficStartTime) + MilliSeconds(CURVE_DURATION_MS), 
                         &WaveSketchAgent::CompressAndAnalyze, wsAgent);
 
-    // Schedule synthetic injections to guarantee activity in agent counters
-    // Inject 5 packets for flow 1 and 3 packets for flow 2 every 1 ms during traffic window
-    int scheduledPairs = 0;
-    for (double t = trafficStartTime; t < trafficStopTime; t += 0.001) {
-        Simulator::Schedule(Seconds(t), &InjectTrafficAt, wsAgent, (uint64_t)1, (uint32_t)5);
-        Simulator::Schedule(Seconds(t), &InjectTrafficAt, wsAgent, (uint64_t)2, (uint32_t)3);
-        scheduledPairs++;
-    }
-    std::cout << "[Main] Scheduled synthetic injection pairs: " << scheduledPairs << " (total events: " << scheduledPairs*2 << ")" << std::endl;
-
     Simulator::Stop(Seconds(10.0));
     Simulator::Run();
     Simulator::Destroy();
 
     return 0;
 }
-
