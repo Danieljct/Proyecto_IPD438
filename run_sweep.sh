@@ -7,9 +7,9 @@ EXECUTABLE="./build/fattree_benchmark"
 
 # --- PARÁMETROS DEL EXPERIMENTO ---
 
-# Algoritmos a probar. Añade "fourier", "omniwindow", "persistcms"
-# aquí a medida que los integres en el .cc
-ALGORITHMS=("wavesketch") 
+# Algoritmos a probar. Incluir los cuatro algoritmos integrados en el benchmark
+# (el nombre debe coincidir con lo que acepta fattree_benchmark: "wavesketch-ideal", "fourier", "omniwindow", "persistcms")
+ALGORITHMS=("wavesketch-ideal" "fourier" "omniwindow" "persistcms")
 
 # Presupuestos de memoria en KB (eje X de los gráficos)
 MEMORY_KB_VALUES=(64 128 256 512 1024 1500)
@@ -23,8 +23,8 @@ echo "Resultados se guardarán en: $OUTPUT_FILE"
 # Borrar el archivo de resultados anterior
 rm -f $OUTPUT_FILE
 
-# Escribir el encabezado en el nuevo archivo
-echo "algorithm,memory_kb,time_s,flow_id,k,window_us,packets,are,cosine_sim,euclidean_dist,energy_sim" > $OUTPUT_FILE
+# Escribir el encabezado en el nuevo archivo (orden esperado por visualize.py)
+echo "time_s,algorithm,memory_kb,flow_id,k,window_us,packets,are,cosine_sim,euclidean_dist,energy_sim" > $OUTPUT_FILE
 
 # Loop anidado para el barrido
 for alg in "${ALGORITHMS[@]}"

@@ -94,6 +94,10 @@ namespace Wavelet {
         }
 
         bool count(TIME t, HASH, DATA c) override {
+            // Debug: print if assertion would fail
+            if (!(t >= start_time)) {
+                std::cerr << "Wavelet::counter::count DEBUG: t=" << t << " start_time=" << start_time << " this=" << this << " c=" << c << "\n";
+            }
             assert(t >= start_time);
             if(start_time == 0) [[unlikely]] {
                 start_time = t;

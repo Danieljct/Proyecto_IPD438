@@ -5,10 +5,9 @@
  *
  * VERSIÓN CORREGIDA (ERRORES DE COMPILACIÓN):
  * - Corrige errores de plantilla para wavelet (`wavelet::wavelet<false>`).
- * - Corrige nombres de clases (ej. `fourier::fourier`).
- * - Corrige la inicialización de objetos de algoritmos en los constructores Agent
- * (usa constructor por defecto + reasignación en Setup).
- * - Añade destructores virtuales `override`.
+ * - Corrige la ambigüedad en la declaración de tipos (`fourier::fourier` -> `fourier::fourier`,
+ * `omniwindow::OmniWindow` -> `omniwindow::omniwindow`).
+ * - Corrige la declaración del destructor `virtual` en la clase base.
  */
 
 #include "ns3/core-module.h"
@@ -27,6 +26,8 @@
 #include <fstream> // Para escribir en archivos
 
 // --- INCLUDES PARA LOS ALGORITMOS DEL AUTOR ---
+// Restore the author's algorithm headers so the benchmark uses the real
+// implementations (we already linked Utility/pffft.c in CMakeLists).
 #include "Wavelet/wavelet.h"
 #include "Fourier/fourier.h"
 #include "OmniWindow/omniwindow.h"
@@ -92,10 +93,11 @@ namespace WaveSketchMetrics {
 // --- INTERFAZ ABSTRACTA BÁSICA ---
 class MeasurementAgent : public Object {
 public:
-    // <-- DESTRUCTOR VIRTUAL EN BASE -->
-    virtual ~MeasurementAgent() override = default;
+    // **CORRECCIÓN 1: Destructor base debe ser virtual y no override.**
+    virtual ~MeasurementAgent() = default;
     virtual void Setup(uint32_t memoryKB, uint32_t windowUs, std::string outputFile) = 0;
-    virtual void OnPacketSent(uint64_t flowId, Ptr<Packet> p) = 0;
+    // La firma de OnPacketSent se adaptó para usar Bind(flowId) en el main
+    virtual void OnPacketSent(uint64_t flowId, Ptr<const Packet> p) = 0;
     virtual void CompressAndAnalyze() = 0;
 protected:
     using FlowTimeSeries = std::map<uint32_t, uint32_t>;
@@ -126,6 +128,11 @@ protected:
     }
 };
 
+// Using the real algorithm classes from the author's library.
+// We'll call `.count(five_tuple, time, data)` when packets arrive and
+// use `rebuild(dict)` at analysis time to obtain reconstructed streams.
+
+
 // --- ALGORITMO 1: WAVESKETCH AGENT (Ideal) ---
 class WaveSketchAgent : public MeasurementAgent {
 public:
@@ -134,10 +141,9 @@ public:
         return tid;
     }
 
-    // <-- CORRECCIÓN: Especificar template -->
-    wavelet::wavelet<false> m_wavelet_algo;
+    // Real wavelet implementation from the author's code
+    wavelet<false> m_wavelet_algo;
 
-    // <-- CORRECCIÓN: Usar constructor por defecto -->
     WaveSketchAgent() {
         m_algorithmName = "wavesketch-ideal";
     }
@@ -152,22 +158,25 @@ public:
 
         m_outputFile.open(m_outputFilename, std::ios_base::app);
 
-        // <-- CORRECCIÓN: Reasignar con parámetros correctos -->
-        m_wavelet_algo = wavelet::wavelet<false>(m_k, memoryBytes, m_numWindowsPerCurve);
+    // no-op: real algorithm uses internal tables, nothing to construct here
+    m_wavelet_algo.reset();
 
         NS_LOG_INFO(m_algorithmName << " configurado: Memoria=" << m_memoryKB << "KB -> K=" << m_k);
     }
 
-    // <-- DESTRUCTOR VIRTUAL OVERRIDE -->
-    ~WaveSketchAgent() override {
+    virtual ~WaveSketchAgent() {
         if (m_outputFile.is_open()) m_outputFile.close();
     }
 
-    virtual void OnPacketSent(uint64_t flowId, Ptr<Packet> /*p*/) override {
+    virtual void OnPacketSent(uint64_t flowId, Ptr<const Packet> /*p*/) override {
         uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
         uint32_t windowIndex = currentTimeUs / m_windowUs;
         m_flowData[flowId][windowIndex]++;
-        m_wavelet_algo.run(flowId, windowIndex, 1);
+    // record into the algorithm using a five_tuple built from flowId
+    five_tuple ft((uint32_t)flowId);
+    TIME t = static_cast<TIME>(currentTimeUs);
+    DATA c = 1;
+    m_wavelet_algo.count(ft, t, c);
     }
 
     virtual void CompressAndAnalyze() override {
@@ -200,10 +209,34 @@ public:
                     originalCurve[w] = it->second;
                     hasActivity = true;
                 }
-                reconstructedCurve[w] = m_wavelet_algo.query(flowId, currentWindowIndex);
+                // we'll reconstruct below using rebuild(); placeholder 0 for now
+                reconstructedCurve[w] = 0.0;
             }
 
             if (!hasActivity) continue;
+
+            // Build STREAM dict for this flow
+            STREAM dict;
+            STREAM_QUEUE q;
+            for (uint32_t w = 0; w < numWindows; ++w) {
+                if (originalCurve[w] > 0.0) {
+                    TIME tt = static_cast<TIME>((startWindow + w) * m_windowUs);
+                    q.emplace_back(tt, static_cast<DATA>(originalCurve[w]));
+                }
+            }
+            if (!q.empty()) dict[five_tuple((uint32_t)flowId)] = q;
+
+            STREAM reconstructed = m_wavelet_algo.rebuild(dict);
+            auto itRec = reconstructed.find(five_tuple((uint32_t)flowId));
+            if (itRec != reconstructed.end()) {
+                for (auto &p : itRec->second) {
+                    TIME tt = p.first;
+                    uint32_t win = tt / m_windowUs;
+                    if (win >= startWindow && win < endWindow) {
+                        reconstructedCurve[win - startWindow] += p.second;
+                    }
+                }
+            }
 
             double totalPackets = std::accumulate(originalCurve.begin(), originalCurve.end(), 0.0);
             double eucDist = WaveSketchMetrics::CalculateEuclideanDistance(originalCurve, reconstructedCurve);
@@ -227,10 +260,8 @@ public:
         return tid;
     }
 
-    // <-- CORRECCIÓN: Nombre de clase minúscula -->
-    fourier::fourier m_fourier_algo;
+    fourier m_fourier_algo;
 
-    // <-- CORRECCIÓN: Constructor por defecto -->
     FourierAgent() {
         m_algorithmName = "fourier";
     }
@@ -245,26 +276,27 @@ public:
 
         m_outputFile.open(m_outputFilename, std::ios_base::app);
 
-        // <-- CORRECCIÓN: Reasignar -->
-        m_fourier_algo = fourier::fourier(m_k, memoryBytes, m_numWindowsPerCurve);
+    // reset/internal init if available
+    m_fourier_algo.reset();
 
         NS_LOG_INFO(m_algorithmName << " configurado: Memoria=" << m_memoryKB << "KB -> K=" << m_k);
     }
 
-    // <-- DESTRUCTOR VIRTUAL OVERRIDE -->
-    ~FourierAgent() override {
+    virtual ~FourierAgent() {
         if (m_outputFile.is_open()) m_outputFile.close();
     }
 
-    virtual void OnPacketSent(uint64_t flowId, Ptr<Packet> /*p*/) override {
+    virtual void OnPacketSent(uint64_t flowId, Ptr<const Packet> /*p*/) override {
         uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
         uint32_t windowIndex = currentTimeUs / m_windowUs;
         m_flowData[flowId][windowIndex]++;
-        m_fourier_algo.run(flowId, windowIndex, 1);
+    five_tuple ft((uint32_t)flowId);
+    TIME t = static_cast<TIME>(currentTimeUs);
+    DATA c = 1;
+    m_fourier_algo.count(ft, t, c);
     }
 
     virtual void CompressAndAnalyze() override {
-        // ... (IDÉNTICO a WaveSketchAgent, solo cambian las llamadas al algo) ...
         uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
         uint64_t analysisBoundaryUs = (currentTimeUs / (CURVE_DURATION_MS * 1000)) * (CURVE_DURATION_MS * 1000);
         if (analysisBoundaryUs <= m_lastProcessedTimeUs) {
@@ -291,10 +323,31 @@ public:
                     originalCurve[w] = it->second;
                     hasActivity = true;
                 }
-                reconstructedCurve[w] = m_fourier_algo.query(flowId, currentWindowIndex);
+                reconstructedCurve[w] = 0.0;
             }
 
             if (!hasActivity) continue;
+
+            STREAM dict;
+            STREAM_QUEUE q;
+            for (uint32_t w = 0; w < numWindows; ++w) {
+                if (originalCurve[w] > 0.0) {
+                    TIME tt = static_cast<TIME>((startWindow + w) * m_windowUs);
+                    q.emplace_back(tt, static_cast<DATA>(originalCurve[w]));
+                }
+            }
+            if (!q.empty()) dict[five_tuple((uint32_t)flowId)] = q;
+            STREAM reconstructed = m_fourier_algo.rebuild(dict);
+            auto itRec = reconstructed.find(five_tuple((uint32_t)flowId));
+            if (itRec != reconstructed.end()) {
+                for (auto &p : itRec->second) {
+                    TIME tt = p.first;
+                    uint32_t win = tt / m_windowUs;
+                    if (win >= startWindow && win < endWindow) {
+                        reconstructedCurve[win - startWindow] += p.second;
+                    }
+                }
+            }
 
             double totalPackets = std::accumulate(originalCurve.begin(), originalCurve.end(), 0.0);
             double eucDist = WaveSketchMetrics::CalculateEuclideanDistance(originalCurve, reconstructedCurve);
@@ -317,9 +370,9 @@ public:
         return tid;
     }
 
-    omniwindow::OmniWindow m_omni_algo;
+    omniwindow m_omni_algo;
 
-    OmniWindowAgent() { // <-- Usa constructor por defecto si existe
+    OmniWindowAgent() {
         m_algorithmName = "omniwindow";
     }
 
@@ -333,27 +386,26 @@ public:
 
         m_outputFile.open(m_outputFilename, std::ios_base::app);
 
-        // <-- CORRECCIÓN: Reasignar -->
-        // Nota: Asegúrate de que el constructor de OmniWindow coincida
-        m_omni_algo = omniwindow::OmniWindow(m_k, memoryBytes, m_numWindowsPerCurve);
+    m_omni_algo.reset();
 
         NS_LOG_INFO(m_algorithmName << " configurado: Memoria=" << m_memoryKB << "KB -> K=" << m_k);
     }
 
-    // <-- DESTRUCTOR VIRTUAL OVERRIDE -->
-    ~OmniWindowAgent() override {
+    virtual ~OmniWindowAgent() {
         if (m_outputFile.is_open()) m_outputFile.close();
     }
 
-    virtual void OnPacketSent(uint64_t flowId, Ptr<Packet> /*p*/) override {
+    virtual void OnPacketSent(uint64_t flowId, Ptr<const Packet> /*p*/) override {
         uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
         uint32_t windowIndex = currentTimeUs / m_windowUs;
         m_flowData[flowId][windowIndex]++;
-        m_omni_algo.run(flowId, windowIndex, 1);
+    five_tuple ft((uint32_t)flowId);
+    TIME t = static_cast<TIME>(currentTimeUs);
+    DATA c = 1;
+    m_omni_algo.count(ft, t, c);
     }
 
     virtual void CompressAndAnalyze() override {
-        // ... (IDÉNTICO a FourierAgent, solo cambian las llamadas al algo) ...
         uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
         uint64_t analysisBoundaryUs = (currentTimeUs / (CURVE_DURATION_MS * 1000)) * (CURVE_DURATION_MS * 1000);
         if (analysisBoundaryUs <= m_lastProcessedTimeUs) {
@@ -380,10 +432,31 @@ public:
                     originalCurve[w] = it->second;
                     hasActivity = true;
                 }
-                reconstructedCurve[w] = m_omni_algo.query(flowId, currentWindowIndex);
+                reconstructedCurve[w] = 0.0;
             }
 
             if (!hasActivity) continue;
+
+            STREAM dict;
+            STREAM_QUEUE q;
+            for (uint32_t w = 0; w < numWindows; ++w) {
+                if (originalCurve[w] > 0.0) {
+                    TIME tt = static_cast<TIME>((startWindow + w) * m_windowUs);
+                    q.emplace_back(tt, static_cast<DATA>(originalCurve[w]));
+                }
+            }
+            if (!q.empty()) dict[five_tuple((uint32_t)flowId)] = q;
+            STREAM reconstructed = m_omni_algo.rebuild(dict);
+            auto itRec = reconstructed.find(five_tuple((uint32_t)flowId));
+            if (itRec != reconstructed.end()) {
+                for (auto &p : itRec->second) {
+                    TIME tt = p.first;
+                    uint32_t win = tt / m_windowUs;
+                    if (win >= startWindow && win < endWindow) {
+                        reconstructedCurve[win - startWindow] += p.second;
+                    }
+                }
+            }
 
             double totalPackets = std::accumulate(originalCurve.begin(), originalCurve.end(), 0.0);
             double eucDist = WaveSketchMetrics::CalculateEuclideanDistance(originalCurve, reconstructedCurve);
@@ -406,10 +479,8 @@ public:
         return tid;
     }
 
-    // <-- CORRECCIÓN: Nombre de clase correcto -->
-    persistcms::PersistCMS m_cms_algo;
+    persistCMS m_cms_algo;
 
-    // <-- CORRECCIÓN: Constructor por defecto -->
     PersistCMSAgent() {
         m_algorithmName = "persistcms";
     }
@@ -424,26 +495,26 @@ public:
 
         m_outputFile.open(m_outputFilename, std::ios_base::app);
 
-        // <-- CORRECCIÓN: Reasignar -->
-        m_cms_algo = persistcms::PersistCMS(m_k, memoryBytes, m_numWindowsPerCurve);
+    m_cms_algo.reset();
 
         NS_LOG_INFO(m_algorithmName << " configurado: Memoria=" << m_memoryKB << "KB -> K=" << m_k);
     }
 
-    // <-- DESTRUCTOR VIRTUAL OVERRIDE -->
-    ~PersistCMSAgent() override {
+    virtual ~PersistCMSAgent() {
         if (m_outputFile.is_open()) m_outputFile.close();
     }
 
-    virtual void OnPacketSent(uint64_t flowId, Ptr<Packet> /*p*/) override {
+    virtual void OnPacketSent(uint64_t flowId, Ptr<const Packet> /*p*/) override {
         uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
         uint32_t windowIndex = currentTimeUs / m_windowUs;
         m_flowData[flowId][windowIndex]++;
-        m_cms_algo.run(flowId, windowIndex, 1);
+    five_tuple ft((uint32_t)flowId);
+    TIME t = static_cast<TIME>(currentTimeUs);
+    DATA c = 1;
+    m_cms_algo.count(ft, t, c);
     }
 
     virtual void CompressAndAnalyze() override {
-        // ... (IDÉNTICO a FourierAgent, solo cambian las llamadas al algo) ...
         uint64_t currentTimeUs = Simulator::Now().GetMicroSeconds();
         uint64_t analysisBoundaryUs = (currentTimeUs / (CURVE_DURATION_MS * 1000)) * (CURVE_DURATION_MS * 1000);
         if (analysisBoundaryUs <= m_lastProcessedTimeUs) {
@@ -470,10 +541,31 @@ public:
                     originalCurve[w] = it->second;
                     hasActivity = true;
                 }
-                reconstructedCurve[w] = m_cms_algo.query(flowId, currentWindowIndex);
+                reconstructedCurve[w] = 0.0;
             }
 
             if (!hasActivity) continue;
+
+            STREAM dict;
+            STREAM_QUEUE q;
+            for (uint32_t w = 0; w < numWindows; ++w) {
+                if (originalCurve[w] > 0.0) {
+                    TIME tt = static_cast<TIME>((startWindow + w) * m_windowUs);
+                    q.emplace_back(tt, static_cast<DATA>(originalCurve[w]));
+                }
+            }
+            if (!q.empty()) dict[five_tuple((uint32_t)flowId)] = q;
+            STREAM reconstructed = m_cms_algo.rebuild(dict);
+            auto itRec = reconstructed.find(five_tuple((uint32_t)flowId));
+            if (itRec != reconstructed.end()) {
+                for (auto &p : itRec->second) {
+                    TIME tt = p.first;
+                    uint32_t win = tt / m_windowUs;
+                    if (win >= startWindow && win < endWindow) {
+                        reconstructedCurve[win - startWindow] += p.second;
+                    }
+                }
+            }
 
             double totalPackets = std::accumulate(originalCurve.begin(), originalCurve.end(), 0.0);
             double eucDist = WaveSketchMetrics::CalculateEuclideanDistance(originalCurve, reconstructedCurve);
@@ -579,7 +671,11 @@ int main(int argc, char *argv[])
     // Puntero genérico al agente activo
     Ptr<MeasurementAgent> activeAgent;
 
-    if (algorithm == "wavesketch-ideal") {
+    // Nota: Uso de MakeCallback con Bind() para pasar el flowId.
+    // El método OnPacketSent recibe (flowId, Ptr<Packet>). Bind(flowId) pasa el flowId.
+    // TraceConnectWithoutContext("Tx") proporciona el Ptr<Packet>.
+
+    if (algorithm == "wavesketch-ideal" || algorithm == "wavesketch") {
         Ptr<WaveSketchAgent> wsAgent = CreateObject<WaveSketchAgent>();
         wsAgent->Setup(memoryKB, windowUs, outputFile);
         tcpClientApp.Get(0)->TraceConnectWithoutContext("Tx", MakeCallback(&WaveSketchAgent::OnPacketSent, wsAgent).Bind((uint64_t)1));
@@ -607,7 +703,6 @@ int main(int argc, char *argv[])
         udpClientApp.Get(0)->TraceConnectWithoutContext("Tx", MakeCallback(&PersistCMSAgent::OnPacketSent, cAgent).Bind((uint64_t)2));
         activeAgent = cAgent;
     }
-    // <-- Puedes añadir un "else if (algorithm == "wavesketch-hw")" aquí -->
     else {
         NS_LOG_ERROR("Algoritmo desconocido: " << algorithm);
         return 1;
@@ -627,4 +722,3 @@ int main(int argc, char *argv[])
     std::cout << "Simulación completada. Resultados guardados en " << outputFile << std::endl;
     return 0;
 }
-

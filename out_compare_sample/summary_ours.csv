@@ -1,0 +1,5 @@
+algorithm,memory_kb,count,mean_are,mean_cosine,mean_euclid,mean_energy
+fourier,64,20,0.0,1.0,0.0,1.0
+omniwindow,64,20,0.9795239,1.0,194.2,0.0005406441
+persistcms,64,20,0.5910336,1.0,12.2,0.85235898
+wavesketch-ideal,64,20,0.0,1.0,0.0,1.0
