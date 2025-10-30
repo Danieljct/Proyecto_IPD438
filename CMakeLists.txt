@@ -26,6 +26,10 @@ add_executable(fattree_benchmark fattree_benchmark.cc)
 # Utility/pffft.c by the user.
 target_sources(fattree_benchmark PRIVATE ${CMAKE_SOURCE_DIR}/Utility/pffft.c)
 
+# New fattree with sketches integrated
+add_executable(fattree_with_sketches fattree_with_sketches.cc)
+target_sources(fattree_with_sketches PRIVATE ${CMAKE_SOURCE_DIR}/Utility/pffft.c)
+
 # Enlaza con NS-3 (todas las libs principales)
 target_link_libraries(fattree
   ns3.45-core-default
@@ -60,10 +64,22 @@ target_link_libraries(fattree_benchmark
   ns3.45-flow-monitor-default
 )
 
+# Enlaza el ejecutable con sketches
+target_link_libraries(fattree_with_sketches
+  ns3.45-core-default
+  ns3.45-network-default
+  ns3.45-internet-default
+  ns3.45-applications-default
+  ns3.45-point-to-point-default
+  ns3.45-traffic-control-default
+  ns3.45-flow-monitor-default
+)
+
 # Flags de compilación
 target_compile_options(fattree PRIVATE ${NS3_CFLAGS_OTHER})
 target_compile_options(fattree_ecn_clean PRIVATE ${NS3_CFLAGS_OTHER})
 target_compile_options(fattree_benchmark PRIVATE ${NS3_CFLAGS_OTHER})
+target_compile_options(fattree_with_sketches PRIVATE ${NS3_CFLAGS_OTHER})
 target_link_directories(fattree PRIVATE ${NS3_LIBRARY_DIRS})
 
 # Offline evaluator: builds the offline evaluator binary that runs the

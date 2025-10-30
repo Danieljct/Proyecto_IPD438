@@ -1,0 +1,65 @@
+Running ISOLATED memory sweep on websearch25.csv
+Memory budgets: 32 64 128 256 KB
+Output: benchmark_results_offline_full.csv
+
+=== Building for memory=32 KB ===
+  Setting MEMORY_KB=32 in parameter.h
+#define MEMORY_KB 32 // Default
+  Cleaning build directory...
+  Running CMake...
+  Compiling...
+[ 33%] Building CXX object CMakeFiles/offline_evaluator.dir/offline_evaluator.cpp.o
+[ 66%] Building C object CMakeFiles/offline_evaluator.dir/Utility/pffft.c.o
+[100%] Linking CXX executable offline_evaluator
+  Running evaluation with offline_evaluator_mem32...
+Parsed 1661240 lines, found 625 flows
+✓ Completed memory=32 KB
+
+=== Building for memory=64 KB ===
+  Setting MEMORY_KB=64 in parameter.h
+#define MEMORY_KB 64 // Default
+  Cleaning build directory...
+  Running CMake...
+  Compiling...
+[ 33%] Building CXX object CMakeFiles/offline_evaluator.dir/offline_evaluator.cpp.o
+[ 66%] Building C object CMakeFiles/offline_evaluator.dir/Utility/pffft.c.o
+[100%] Linking CXX executable offline_evaluator
+  Running evaluation with offline_evaluator_mem64...
+Parsed 1661240 lines, found 625 flows
+✓ Completed memory=64 KB
+
+=== Building for memory=128 KB ===
+  Setting MEMORY_KB=128 in parameter.h
+#define MEMORY_KB 128 // Default
+  Cleaning build directory...
+  Running CMake...
+  Compiling...
+[ 33%] Building CXX object CMakeFiles/offline_evaluator.dir/offline_evaluator.cpp.o
+[ 66%] Building C object CMakeFiles/offline_evaluator.dir/Utility/pffft.c.o
+[100%] Linking CXX executable offline_evaluator
+  Running evaluation with offline_evaluator_mem128...
+Parsed 1661240 lines, found 625 flows
+✓ Completed memory=128 KB
+
+=== Building for memory=256 KB ===
+  Setting MEMORY_KB=256 in parameter.h
+#define MEMORY_KB 256 // Default
+  Cleaning build directory...
+  Running CMake...
+  Compiling...
+[ 33%] Building CXX object CMakeFiles/offline_evaluator.dir/offline_evaluator.cpp.o
+[ 66%] Building C object CMakeFiles/offline_evaluator.dir/Utility/pffft.c.o
+[100%] Linking CXX executable offline_evaluator
+  Running evaluation with offline_evaluator_mem256...
+Parsed 1661240 lines, found 625 flows
+✓ Completed memory=256 KB
+
+=== Sweep complete ===
+1 benchmark_results_offline_full.csv
+Restored MEMORY_KB=256
+
+Binaries saved:
+-rwxrwxr-x 1 daniel daniel 756K oct 29 17:48 offline_evaluator_mem128
+-rwxrwxr-x 1 daniel daniel 752K oct 29 17:51 offline_evaluator_mem256
+-rwxrwxr-x 1 daniel daniel 755K oct 29 17:42 offline_evaluator_mem32
+-rwxrwxr-x 1 daniel daniel 752K oct 29 17:45 offline_evaluator_mem64

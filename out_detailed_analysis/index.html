@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Análisis de Resultados - Variación de ARE con Memoria</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            border-bottom: 4px solid #3498db;
+            padding-bottom: 20px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 40px;
+            border-left: 5px solid #e74c3c;
+            padding-left: 15px;
+        }
+        .summary-box {
+            background-color: #fff;
+            border-radius: 10px;
+            padding: 25px;
+            margin: 20px 0;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .key-finding {
+            background-color: #d5f4e6;
+            border-left: 5px solid #27ae60;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+        .warning {
+            background-color: #fadbd8;
+            border-left: 5px solid #e74c3c;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+        .image-container {
+            background-color: #fff;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .image-container img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .image-title {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #34495e;
+            margin-bottom: 15px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #34495e;
+            color: white;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .metric-good {
+            color: #27ae60;
+            font-weight: bold;
+        }
+        .metric-bad {
+            color: #e74c3c;
+            font-weight: bold;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 50px;
+            padding: 20px;
+            color: #7f8c8d;
+            border-top: 2px solid #bdc3c7;
+        }
+    </style>
+</head>
+<body>
+    <h1>📊 Análisis de Resultados: Variación de ARE con Memoria</h1>
+    
+    <div class="summary-box">
+        <h2>🎯 Resumen Ejecutivo</h2>
+        <p><strong>Objetivo:</strong> Evaluar cómo varía el Average Relative Error (ARE) de diferentes algoritmos de sketch al modificar el presupuesto de memoria.</p>
+        
+        <p><strong>Dataset:</strong> websearch25.csv (1.66M paquetes, 625 flows)</p>
+        <p><strong>Memorias evaluadas:</strong> 96, 128, 192, 256 KB</p>
+        <p><strong>Algoritmos:</strong> WaveSketch-Ideal, Fourier, OmniWindow, PersistCMS</p>
+        
+        <div class="key-finding">
+            <strong>✅ Hallazgo Principal:</strong> Solo <strong>Fourier</strong> muestra variación significativa (143.7%) con el aumento de memoria. WaveSketch, OmniWindow y PersistCMS muestran comportamiento constante o mínima mejora (&lt;3%).
+        </div>
+        
+        <div class="warning">
+            <strong>⚠️ Observación Importante:</strong> WaveSketch obtiene el mejor ARE promedio (0.48), pero NO mejora con más memoria, sugiriendo que el diseño del algoritmo ya es eficiente con memoria mínima o que utiliza parámetros internos adicionales no controlados por FULL_DEPTH.
+        </div>
+    </div>
+
+    <h2>📈 Gráficos de Análisis</h2>
+
+    <div class="image-container">
+        <div class="image-title">Resumen de Impacto de Memoria</div>
+        <img src="summary_impact.png" alt="Resumen de Impacto">
+        <p><em>Izquierda: Evolución de ARE promedio. Derecha: Variación relativa por algoritmo (umbral de significancia: 5%)</em></p>
+    </div>
+
+    <div class="image-container">
+        <div class="image-title">Tabla Resumen de ARE por Memoria</div>
+        <img src="summary_table.png" alt="Tabla Resumen">
+    </div>
+
+    <div class="image-container">
+        <div class="image-title">Variación Detallada de ARE por Algoritmo</div>
+        <img src="are_variation_detailed.png" alt="Variación ARE Detallada">
+        <p><em>Distribución de ARE (boxplots) para cada memoria. La línea negra muestra la media.</em></p>
+    </div>
+
+    <div class="image-container">
+        <div class="image-title">Mapa de Mejora Relativa vs 96 KB</div>
+        <img src="improvement_heatmap.png" alt="Heatmap de Mejora">
+        <p><em>Verde = Mejora (menor ARE), Rojo = Empeoramiento. Valores en porcentaje respecto a 96 KB.</em></p>
+    </div>
+
+    <div class="image-container">
+        <div class="image-title">Comparación entre Algoritmos por Memoria</div>
+        <img src="algorithm_comparison.png" alt="Comparación de Algoritmos">
+        <p><em>Distribución de ARE para cada algoritmo, separado por memoria. Punto rojo = media.</em></p>
+    </div>
+
+    <div class="image-container">
+        <div class="image-title">Evolución de Flows Individuales</div>
+        <img src="flow_samples_evolution.png" alt="Flows Individuales">
+        <p><em>Trayectorias de ARE para los 6 flows con mayor varianza. Muestra comportamiento heterogéneo entre algoritmos.</em></p>
+    </div>
+
+    <div class="image-container">
+        <div class="image-title">Tabla de Estadísticas Completas</div>
+        <img src="statistics_table.png" alt="Tabla Estadísticas">
+        <p><em>Estadísticas descriptivas completas (media, mediana, desv. std, min, max, cuartiles) por algoritmo y memoria.</em></p>
+    </div>
+
+    <div class="summary-box">
+        <h2>📋 Conclusiones Principales</h2>
+        
+        <h3>1. Sensibilidad a la Memoria</h3>
+        <table>
+            <tr>
+                <th>Algoritmo</th>
+                <th>Variación (%)</th>
+                <th>Clasificación</th>
+                <th>Observaciones</th>
+            </tr>
+            <tr>
+                <td><strong>Fourier</strong></td>
+                <td class="metric-bad">143.7%</td>
+                <td>✅ Alta sensibilidad</td>
+                <td>Mejora significativa con memoria (ARE: 2.06 → 0.37)</td>
+            </tr>
+            <tr>
+                <td><strong>OmniWindow</strong></td>
+                <td class="metric-good">3.1%</td>
+                <td>❌ Baja sensibilidad</td>
+                <td>Mejora marginal (ARE: 0.78 → 0.76)</td>
+            </tr>
+            <tr>
+                <td><strong>WaveSketch</strong></td>
+                <td class="metric-good">0.0%</td>
+                <td>❌ No sensible</td>
+                <td>Comportamiento constante (ARE = 0.48 en todas las memorias)</td>
+            </tr>
+            <tr>
+                <td><strong>PersistCMS</strong></td>
+                <td class="metric-good">0.0%</td>
+                <td>❌ No sensible</td>
+                <td>Comportamiento constante (ARE = 1.55 en todas las memorias)</td>
+            </tr>
+        </table>
+
+        <h3>2. Ranking de Algoritmos por Memoria</h3>
+        <ul>
+            <li><strong>96-128 KB:</strong> WaveSketch &gt; OmniWindow &gt; PersistCMS &gt; Fourier</li>
+            <li><strong>192-256 KB:</strong> Fourier &gt; WaveSketch &gt; OmniWindow &gt; PersistCMS</li>
+        </ul>
+        <p><em>Nota: Con suficiente memoria (≥256 KB), Fourier supera a WaveSketch.</em></p>
+
+        <h3>3. Implicaciones</h3>
+        <div class="key-finding">
+            <strong>Para ambientes con memoria limitada (&lt;192 KB):</strong> WaveSketch es la mejor opción, con ARE constante de 0.48 independiente de la memoria disponible.
+        </div>
+        <div class="key-finding">
+            <strong>Para ambientes con memoria abundante (≥256 KB):</strong> Fourier alcanza el mejor ARE (0.37), superando a WaveSketch.
+        </div>
+        <div class="warning">
+            <strong>Hipótesis sobre WaveSketch:</strong> La falta de variación sugiere que:<br>
+            1. El algoritmo es intrínsecamente eficiente y no requiere más memoria, o<br>
+            2. Existen parámetros internos adicionales (ej: WAVE_DEPTH) que no fueron variados correctamente durante la compilación.
+        </div>
+
+        <h3>4. Validación Técnica</h3>
+        <ul>
+            <li>✅ Recompilación confirmada para cada memoria (binarios de diferentes tamaños)</li>
+            <li>✅ Fourier y OmniWindow responden correctamente a cambios en FULL_DEPTH</li>
+            <li>❌ WaveSketch y PersistCMS no muestran sensibilidad a FULL_DEPTH</li>
+            <li>✅ Resultados consistentes entre múltiples ejecuciones</li>
+        </ul>
+    </div>
+
+    <div class="summary-box">
+        <h2>📂 Archivos Generados</h2>
+        <ul>
+            <li><code>summary_impact.png</code> - Resumen visual del impacto de memoria</li>
+            <li><code>summary_table.png</code> - Tabla resumen de ARE por memoria</li>
+            <li><code>are_variation_detailed.png</code> - Variación detallada con boxplots</li>
+            <li><code>improvement_heatmap.png</code> - Mapa de calor de mejoras</li>
+            <li><code>algorithm_comparison.png</code> - Comparación entre algoritmos</li>
+            <li><code>flow_samples_evolution.png</code> - Evolución de flows individuales</li>
+            <li><code>statistics_table.png</code> - Tabla de estadísticas completas</li>
+            <li><code>analysis_summary.txt</code> - Reporte de texto con estadísticas</li>
+        </ul>
+    </div>
+
+    <div class="footer">
+        <p>Análisis generado: 29 de octubre de 2025</p>
+        <p>Dataset: websearch25.csv | Total evaluaciones: 10,000</p>
+    </div>
+</body>
+</html>

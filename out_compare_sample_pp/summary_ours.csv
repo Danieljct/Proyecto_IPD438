@@ -1,5 +1,0 @@
-algorithm,memory_kb,count,mean_are,mean_cosine,mean_euclid,mean_energy
-fourier,64,10,1.0,1.0,200.0,0.0
-omniwindow,64,10,1.0,1.0,200.0,0.0
-persistcms,64,10,1.0,1.0,200.0,0.0
-wavesketch-ideal,64,10,1.0,1.0,200.0,0.0

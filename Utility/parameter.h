@@ -21,12 +21,16 @@
 // data in second top level
 #define RESERVED 8u
 // table dimensions
-#define FULL_WIDTH 32u
+#define MEMORY_KB 256
+#define FULL_WIDTH 256u  // Fixed width (authors used 256 in experiments)
 #define HALF_WIDTH (FULL_WIDTH / 2u)
 #define FULL_HEIGHT 3u
 #define LESS_HEIGHT (FULL_HEIGHT - 1u)
 #define PAIR_HEIGHT 2u
-#define FULL_DEPTH (MAX_LENGTH / SAMPLE_RATE)
+// Calculate FULL_DEPTH dynamically based on MEMORY_KB
+// Formula: MEMORY = WIDTH × HEIGHT × DEPTH × 4 bytes => DEPTH = MEMORY / (WIDTH × HEIGHT × 4)
+// Minimum MEMORY_KB >= 96 required (FULL_DEPTH >= 10 for counter.h formulas)
+#define FULL_DEPTH ((MEMORY_KB * 1024) / (FULL_WIDTH * FULL_HEIGHT * 4))
 //#define WAVE_DEPTH 55u
 //#define PAMS_DEPTH 24u
 #define PCMS_DELTA (SAMPLE_RATE * 2)
