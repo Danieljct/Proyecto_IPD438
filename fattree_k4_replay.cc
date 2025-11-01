@@ -13,6 +13,9 @@
 #include "ns3/internet-module.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/applications-module.h"
+#include "ns3/traffic-control-module.h"
+#include "ns3/queue-disc.h"
+#include "ns3/queue-size.h"
 
 #include <algorithm>
 #include <fstream>
@@ -22,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 #include <memory>
+#include <map>
 
 using namespace ns3;
 
@@ -47,7 +51,15 @@ public:
   void Record(uint32_t /*flowId*/, uint32_t bytes) {
     uint64_t nowNs = Simulator::Now().GetNanoSeconds();
     uint64_t windowIndex = nowNs / m_windowNs;
-    m_total[windowIndex] += bytes;
+    auto &entry = m_windows[windowIndex];
+    entry.bytes += bytes;
+  }
+
+  void RecordEcnMark() {
+    uint64_t nowNs = Simulator::Now().GetNanoSeconds();
+    uint64_t windowIndex = nowNs / m_windowNs;
+    auto &entry = m_windows[windowIndex];
+    entry.ecnMarks += 1;
   }
 
   void WriteCsv() const {
@@ -56,23 +68,43 @@ public:
       std::cerr << "Error: no se pudo abrir " << m_filename << " para escritura" << std::endl;
       return;
     }
-    ofs << "time_s,total_rate_gbps\n";
-    for (const auto &bucket : m_total) {
+    ofs << "time_s,total_rate_gbps,ecn_marks\n";
+    for (const auto &bucket : m_windows) {
       uint64_t windowIdx = bucket.first;
-      uint64_t bytes = bucket.second;
+      const WindowStats &stats = bucket.second;
       double timeSeconds = static_cast<double>(windowIdx * m_windowNs) / 1e9;
-      double rateGbps = (bytes * 8.0) / static_cast<double>(m_windowNs); // bytes/ns -> Gbps
-      ofs << timeSeconds << ',' << rateGbps << '\n';
+      double rateGbps = (stats.bytes * 8.0) / static_cast<double>(m_windowNs); // bytes/ns -> Gbps
+      ofs << timeSeconds << ',' << rateGbps << ',' << stats.ecnMarks << '\n';
     }
   }
 
 private:
+  struct WindowStats {
+    uint64_t bytes = 0;
+    uint32_t ecnMarks = 0;
+  };
+
   uint64_t m_windowNs;
   std::string m_filename;
-  std::map<uint64_t, uint64_t> m_total;
+  std::map<uint64_t, WindowStats> m_windows;
 };
 
 static std::unique_ptr<FlowRateLogger> g_flowLogger;
+
+void OnQueueDiscMark(Ptr<const QueueDiscItem> /*item*/, const char * /*reason*/) {
+  if (g_flowLogger) {
+    g_flowLogger->RecordEcnMark();
+  }
+}
+
+void AttachEcnTracer(const QueueDiscContainer &container) {
+  for (uint32_t i = 0; i < container.GetN(); ++i) {
+    Ptr<QueueDisc> qd = container.Get(i);
+    if (qd) {
+      qd->TraceConnectWithoutContext("Mark", MakeCallback(&OnQueueDiscMark));
+    }
+  }
+}
 
 void SendPacket(Ptr<Socket> socket, Ipv4Address destination, uint16_t port,
                 uint32_t bytes, uint32_t flowId) {
@@ -140,14 +172,31 @@ int main(int argc, char *argv[]) {
   stack.Install(coreSwitches);
 
   PointToPointHelper p2p;
-  p2p.SetDeviceAttribute("DataRate", StringValue("100Gbps"));
+  p2p.SetDeviceAttribute("DataRate", StringValue("200Gbps"));
   p2p.SetChannelAttribute("Delay", StringValue("1us"));
+
+  TrafficControlHelper tch;
+  tch.SetRootQueueDisc("ns3::RedQueueDisc",
+                       "MinTh", DoubleValue(20),
+                       "MaxTh", DoubleValue(50),
+                       "MaxSize", QueueSizeValue(QueueSize("200p")),
+                       "LinkBandwidth", StringValue("200Gbps"),
+                       "LinkDelay", StringValue("1us"),
+                       "UseEcn", BooleanValue(true),
+                       "Gentle", BooleanValue(true));
 
   Ipv4AddressHelper addressHelper;
   addressHelper.SetBase("10.0.0.0", "255.255.255.0");
 
   std::vector<Ipv4Address> hostAddresses(TOTAL_HOSTS);
   std::vector<Ptr<Socket>> hostSockets(TOTAL_HOSTS);
+
+  auto installLink = [&](Ptr<Node> a, Ptr<Node> b) {
+    NetDeviceContainer devices = p2p.Install(a, b);
+    QueueDiscContainer qdiscs = tch.Install(devices);
+    AttachEcnTracer(qdiscs);
+    return devices;
+  };
 
   auto getEdgeIndex = [](uint32_t pod, uint32_t edge) {
     return pod * EDGES_PER_POD + edge;
@@ -166,7 +215,7 @@ int main(int argc, char *argv[]) {
       for (uint32_t h = 0; h < HOSTS_PER_EDGE; ++h) {
         uint32_t hostIdx = getHostIndex(pod, edge, h);
         Ptr<Node> hostNode = hosts.Get(hostIdx);
-        NetDeviceContainer link = p2p.Install(hostNode, edgeNode);
+        NetDeviceContainer link = installLink(hostNode, edgeNode);
         Ipv4InterfaceContainer ifaces = addressHelper.Assign(link);
         hostAddresses[hostIdx] = ifaces.GetAddress(0);
         addressHelper.NewNetwork();
@@ -180,7 +229,7 @@ int main(int argc, char *argv[]) {
       Ptr<Node> edgeNode = edgeSwitches.Get(getEdgeIndex(pod, edge));
       for (uint32_t agg = 0; agg < AGGS_PER_POD; ++agg) {
         Ptr<Node> aggNode = aggSwitches.Get(getAggIndex(pod, agg));
-        NetDeviceContainer link = p2p.Install(edgeNode, aggNode);
+        NetDeviceContainer link = installLink(edgeNode, aggNode);
         addressHelper.Assign(link);
         addressHelper.NewNetwork();
       }
@@ -195,7 +244,7 @@ int main(int argc, char *argv[]) {
       for (uint32_t core = 0; core < corePerGroup; ++core) {
         uint32_t coreIdx = agg * corePerGroup + core;
         Ptr<Node> coreNode = coreSwitches.Get(coreIdx);
-        NetDeviceContainer link = p2p.Install(aggNode, coreNode);
+        NetDeviceContainer link = installLink(aggNode, coreNode);
         addressHelper.Assign(link);
         addressHelper.NewNetwork();
       }
@@ -208,6 +257,7 @@ int main(int argc, char *argv[]) {
   for (uint32_t i = 0; i < TOTAL_HOSTS; ++i) {
     sinkHelper.Install(hosts.Get(i));
     Ptr<Socket> socket = Socket::CreateSocket(hosts.Get(i), UdpSocketFactory::GetTypeId());
+    socket->SetIpTos(0x02); // ECT(0) para permitir marcado ECN
     socket->Bind();
     hostSockets[i] = socket;
   }

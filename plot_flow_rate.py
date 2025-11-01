@@ -15,7 +15,7 @@ import pandas as pd
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Grafica la tasa total observada en el enlace")
-    parser.add_argument("--input", default="flow_rate.csv", help="CSV con columnas time_s,total_rate_gbps")
+    parser.add_argument("--input", default="flow_rate.csv", help="CSV con columnas time_s,total_rate_gbps,ecn_marks")
     parser.add_argument("--output", default=None, help="Nombre de archivo para guardar la figura (PNG/PDF). Si no se indica, muestra la ventana interactiva.")
     args = parser.parse_args()
 
@@ -31,6 +31,11 @@ def main() -> None:
 
     plt.figure(figsize=(10, 6))
     plt.plot(df["time_s"], df["total_rate_gbps"], label="Total")
+
+    if "ecn_marks" in df.columns:
+        marked = df[df["ecn_marks"] > 0]
+        if not marked.empty:
+            plt.scatter(marked["time_s"], marked["total_rate_gbps"], color="red", label="Marcas ECN", zorder=5)
 
     plt.xlabel("Tiempo (s)")
     plt.ylabel("Tasa total (Gbps)")

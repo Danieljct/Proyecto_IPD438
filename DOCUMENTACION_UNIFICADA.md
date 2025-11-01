@@ -50,9 +50,11 @@ La salida de `fattree_ecn_clean` incluye mediciones periódicas de ECN, análisi
 de colas RED y reportes del agente WaveSketch.
 
 `fattree_k4_replay` genera el archivo indicado en `--flowCsv` (por defecto
-`flow_rate.csv`) con columnas `time_s, total_rate_gbps`, es decir, la tasa
-agregada de todos los flujos que atraviesan el enlace. El script
-`plot_flow_rate.py` permite visualizarlo:
+`flow_rate.csv`) con columnas `time_s, total_rate_gbps, ecn_marks`. Además de la
+curva de tasa agregada, se registra cuántas marcas ECN ocurrieron en cada
+ventana temporal (si `ecn_marks > 0`, hubo congestión marcada). El script
+`plot_flow_rate.py` permite visualizarlo y resaltar en rojo los instantes con
+marcado ECN:
 
 ```bash
 cd /home/daniel/PaperRedes/Proyecto_IPD438

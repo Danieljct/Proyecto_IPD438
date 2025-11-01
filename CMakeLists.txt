@@ -52,6 +52,7 @@ target_link_libraries(fattree_k4_replay
   ns3.45-internet-default
   ns3.45-applications-default
   ns3.45-point-to-point-default
+  ns3.45-traffic-control-default
 )
 
 
