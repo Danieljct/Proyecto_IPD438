@@ -19,6 +19,9 @@ add_executable(fattree fattree.cc)
 # Versión limpia para medición ECN
 add_executable(fattree_ecn_clean fattree_ecn_clean.cc)
 
+# Topología Fat-Tree k=4 que reproduce la traza hadoop15.csv
+add_executable(fattree_k4_replay fattree_k4_replay.cc)
+
 
 # Enlaza con NS-3 (todas las libs principales)
 target_link_libraries(fattree
@@ -43,8 +46,18 @@ target_link_libraries(fattree_ecn_clean
   ns3.45-flow-monitor-default
 )
 
+target_link_libraries(fattree_k4_replay
+  ns3.45-core-default
+  ns3.45-network-default
+  ns3.45-internet-default
+  ns3.45-applications-default
+  ns3.45-point-to-point-default
+)
+
 
 # Flags de compilación
 target_compile_options(fattree PRIVATE ${NS3_CFLAGS_OTHER})
 target_compile_options(fattree_ecn_clean PRIVATE ${NS3_CFLAGS_OTHER})
+target_compile_options(fattree_k4_replay PRIVATE ${NS3_CFLAGS_OTHER})
 target_link_directories(fattree PRIVATE ${NS3_LIBRARY_DIRS})
+target_link_directories(fattree_k4_replay PRIVATE ${NS3_LIBRARY_DIRS})

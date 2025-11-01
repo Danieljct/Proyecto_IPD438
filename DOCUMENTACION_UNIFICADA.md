@@ -15,6 +15,9 @@ WaveSketch para capturar contadores de flujo de alta resolución.
 - `fattree_ecn_clean.cc`: versión optimizada para la medición de ECN con RED
   ultra-agresivo, mezcla de tráfico TCP/UDP y un agente WaveSketch integrado
   (implementado íntegramente dentro del propio fichero).
+- `fattree_k4_replay.cc`: topología Fat-Tree con k = 4 (16 hosts) que reproduce
+  la traza `hadoop15.csv` sobre enlaces de 100 Gbps/1 µs y genera un CSV con la
+  tasa de cada flujo; acompaña un script Python para graficar la evolución.
 
 Se retiraron implementaciones experimentales adicionales para dejar solo las dos
 variantes que demostraron ser útiles y mantenibles.
@@ -33,16 +36,31 @@ cd /home/daniel/PaperRedes/Proyecto_IPD438/build
 cmake ..
 make fattree -j$(nproc)
 make fattree_ecn_clean -j$(nproc)
+make fattree_k4_replay -j$(nproc)
 ```
 
 ### Ejecución
 ```bash
 ./fattree
 ./fattree_ecn_clean > salida.txt 2>&1  # opcional: guardar salida
+./fattree_k4_replay --input=hadoop15.csv --flowCsv=flow_rate.csv --windowNs=1000000
 ```
 
 La salida de `fattree_ecn_clean` incluye mediciones periódicas de ECN, análisis
 de colas RED y reportes del agente WaveSketch.
+
+`fattree_k4_replay` genera el archivo indicado en `--flowCsv` (por defecto
+`flow_rate.csv`) con columnas `time_s, total_rate_gbps`, es decir, la tasa
+agregada de todos los flujos que atraviesan el enlace. El script
+`plot_flow_rate.py` permite visualizarlo:
+
+```bash
+cd /home/daniel/PaperRedes/Proyecto_IPD438
+./.venv/bin/python plot_flow_rate.py --input flow_rate.csv --output flow_rate.png
+```
+
+> Requiere `pandas` y `matplotlib` (ya presentes en el entorno virtual del
+> proyecto). Si se usa otro intérprete, instala estos paquetes previamente.
 
 ## 3. Resumen técnico — `fattree_ecn_clean`
 
