@@ -17,6 +17,8 @@
 #include "ns3/queue-disc.h"
 #include "ns3/queue-size.h"
 
+#include "wavesketch/Wavelet/wavelet.h"
+
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -26,6 +28,7 @@
 #include <vector>
 #include <memory>
 #include <map>
+#include <limits>
 
 using namespace ns3;
 
@@ -68,13 +71,64 @@ public:
       std::cerr << "Error: no se pudo abrir " << m_filename << " para escritura" << std::endl;
       return;
     }
-    ofs << "time_s,total_rate_gbps,ecn_marks\n";
+    struct SampleRow {
+      uint64_t windowIndex;
+      uint64_t bytes;
+      int32_t scaledValue;
+      uint32_t ecnMarks;
+    };
+
+    std::vector<SampleRow> samples;
+    samples.reserve(m_windows.size());
     for (const auto &bucket : m_windows) {
-      uint64_t windowIdx = bucket.first;
       const WindowStats &stats = bucket.second;
-      double timeSeconds = static_cast<double>(windowIdx * m_windowNs) / 1e9;
-      double rateGbps = (stats.bytes * 8.0) / static_cast<double>(m_windowNs); // bytes/ns -> Gbps
-      ofs << timeSeconds << ',' << rateGbps << ',' << stats.ecnMarks << '\n';
+      uint64_t rounded = (stats.bytes + kWaveletScale / 2) / kWaveletScale;
+      uint64_t clamped = std::min<uint64_t>(rounded, static_cast<uint64_t>(std::numeric_limits<int32_t>::max()));
+      if (rounded > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+        std::cerr << "Advertencia: Se truncó el valor escalado de la ventana " << bucket.first << " para ajustarlo al rango int32." << std::endl;
+      }
+      samples.push_back(SampleRow{bucket.first, stats.bytes, static_cast<int32_t>(clamped), stats.ecnMarks});
+    }
+
+  five_tuple syntheticFlow(0);
+  wavelet<false> waveletScheme;
+  waveletScheme.reset();
+
+    STREAM dict;
+    STREAM_QUEUE &queue = dict[syntheticFlow];
+
+    std::vector<int32_t> reconstructedValues(samples.size(), 0);
+    uint32_t tick = 1;
+    for (size_t i = 0; i < samples.size(); ++i, ++tick) {
+  queue.emplace_back(tick, samples[i].scaledValue);
+  waveletScheme.count(syntheticFlow, tick, samples[i].scaledValue);
+  reconstructedValues[i] = samples[i].scaledValue;
+    }
+
+    waveletScheme.flush();
+
+    STREAM rebuilt = waveletScheme.rebuild(dict);
+    auto reconstructedIt = rebuilt.find(syntheticFlow);
+    if (reconstructedIt != rebuilt.end()) {
+      for (const auto &entry : reconstructedIt->second) {
+        if (entry.first == 0) {
+          continue;
+        }
+        size_t index = static_cast<size_t>(entry.first - 1);
+        if (index < reconstructedValues.size()) {
+          reconstructedValues[index] = entry.second;
+        }
+      }
+    }
+
+    ofs << "time_s,total_rate_gbps,reconstructed_rate_gbps,ecn_marks\n";
+    for (size_t i = 0; i < samples.size(); ++i) {
+      const SampleRow &row = samples[i];
+      double timeSeconds = static_cast<double>(row.windowIndex * m_windowNs) / 1e9;
+      double originalRate = static_cast<double>(row.bytes) * 8.0 / static_cast<double>(m_windowNs);
+      double reconstructedBytes = std::max(0.0, static_cast<double>(reconstructedValues[i]) * static_cast<double>(kWaveletScale));
+      double reconstructedRate = reconstructedBytes * 8.0 / static_cast<double>(m_windowNs);
+      ofs << timeSeconds << ',' << originalRate << ',' << reconstructedRate << ',' << row.ecnMarks << '\n';
     }
   }
 
@@ -83,6 +137,8 @@ private:
     uint64_t bytes = 0;
     uint32_t ecnMarks = 0;
   };
+
+  static constexpr uint32_t kWaveletScale = 1000;
 
   uint64_t m_windowNs;
   std::string m_filename;
@@ -172,7 +228,7 @@ int main(int argc, char *argv[]) {
   stack.Install(coreSwitches);
 
   PointToPointHelper p2p;
-  p2p.SetDeviceAttribute("DataRate", StringValue("200Gbps"));
+  p2p.SetDeviceAttribute("DataRate", StringValue("100Gbps"));
   p2p.SetChannelAttribute("Delay", StringValue("1us"));
 
   TrafficControlHelper tch;
@@ -180,7 +236,7 @@ int main(int argc, char *argv[]) {
                        "MinTh", DoubleValue(20),
                        "MaxTh", DoubleValue(50),
                        "MaxSize", QueueSizeValue(QueueSize("200p")),
-                       "LinkBandwidth", StringValue("200Gbps"),
+                       "LinkBandwidth", StringValue("100Gbps"),
                        "LinkDelay", StringValue("1us"),
                        "UseEcn", BooleanValue(true),
                        "Gentle", BooleanValue(true));

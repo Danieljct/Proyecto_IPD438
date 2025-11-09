@@ -1,0 +1,143 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% El preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{subcaption} % Para subfiguras
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Replicación del Sistema de Monitoreo de Red \\ Microsegundo-Nivel $\mu$MON: WaveSketch y Event Replay}
+
+\author{\IEEEauthorblockN{Daniel Josué Cubillos Tapia}
+\IEEEauthorblockA{\textit{Departamento de Electrónica} \\
+\textit{Universidad Técnica Federico Santa María}\\
+Valparaíso, Chile \\
+daniel.cubillost@usm.cl}
+}
+
+\maketitle
+
+\begin{abstract}
+El monitoreo de red en centros de datos modernos requiere precisión a nivel de microsegundos ($\mu$s) para capturar micro-ráfagas y fluctuaciones de tasa de flujo. El sistema $\mu$MON propone una solución que utiliza el algoritmo \textit{WaveSketch} para la compresión eficiente de curvas de tasa de flujo (\textit{$\mu$Flow}) en los \textit{hosts}, y la detección de eventos de congestión (\textit{$\mu$Event}) mediante marcas ECN en los \textit{switches}. Este informe presenta la metodología, arquitectura e implementación de la replicación de $\mu$MON utilizando el simulador NS-3. Específicamente, replicamos la topología Fat-Tree $k=4$, el mecanismo de congestión ECN/RED, y el proceso de reconstrucción de tasas de flujo mediante wavelets. Los resultados demuestran la fidelidad del enfoque de monitoreo microsegundo-nivel y se valida la capacidad de \textit{Event Replay} al correlacionar la tasa de flujo reconstruida con las marcas de congestión.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Monitoreo de red, NS-3, $\mu$MON, WaveSketch, Fat-Tree, ECN, simulación.
+\end{IEEEkeywords}
+
+\section{Introducción}
+\label{sec:introduction}
+% (10 pts. Introducción)
+Esta sección establece el \textbf{Problema y la Motivación} (10 pts. según la pauta).
+\subsection{Problema y Motivación}
+Describa la necesidad crítica de monitoreo a nivel de microsegundos en los centros de datos (micro-ráfagas, latencia, ajustes rápidos de CC).
+Mencione que los sistemas tradicionales son insuficientes (milésimas de segundo).
+\subsection{Objetivo del Informe}
+Establezca claramente que el objetivo es replicar los componentes centrales del paper ``$\mu$MON: Empowering Microsecond-level Network Monitoring with Wavelets'' utilizando NS-3, enfocándose en la simulación de \textit{$\mu$Flow Measurement} y \textit{$\mu$Event Detection}.
+
+\section{Trabajos Relacionados}
+\label{sec:related_work}
+% (5 pts. Trabajos relacionados)
+Revisión concisa de soluciones de monitoreo de red relevantes, comparando su granularidad temporal y plataforma de implementación.
+\begin{itemize}
+    \item \textbf{Monitoreo de Granularidad Gruesa:} Mencione Netflow/SNMP (segundos/minutos).
+    \item \textbf{Monitoreo a Milisegundos:} Mencione soluciones de \textit{sketching} que no manejan compresión temporal (ej., Count-Min Sketch tradicional).
+    \item \textbf{Monitoreo $\mu$s en Plano de Datos:} Mencione enfoques que requieren \textit{switches} programables (P4) como BurstRadar o ConQuest, destacando que $\mu$MON busca compatibilidad con \textit{commodity switches} (ECN/Mirroring).
+\end{itemize}
+
+\section{Arquitectura y Metodología de Replicación}
+% (15 pts. estrategia y arquitectura)
+Aquí se detalla la \textbf{Estrategia y Arquitectura} de la replicación.
+\subsection{Arquitectura del Sistema $\mu$MON}
+Presente un diagrama conceptual (si es posible) de la arquitectura $\mu$MON: Hosts (WaveSketch) $\leftrightarrow$ Switches (ECN/Mirroring) $\leftrightarrow$ Analizador ($\mu$Event Replay). \subsection{Diseño de la Topología en NS-3}
+\begin{itemize}
+    \item \textbf{Topología Fat-Tree $k=4$:} Detalle la construcción (4 pods, 4 core switches, 16 hosts).
+    \item \textbf{Configuración de Enlaces:} $\text{100 Gbps}$ y $1\mu s$ de delay por salto.
+\end{itemize}
+
+\subsection{Implementación de $\mu$Flow Measurement (WaveSketch)}
+Describa cómo se adaptó la lógica de WaveSketch en el código NS-3 (\texttt{FlowRateLogger::WriteCsv}).
+\begin{itemize}
+    \item \textbf{Recolección de $\mu$Flows:} Explicar la ventana de agregación (ej. $8.192 \mu s$ o $1 \mu s$).
+    \item \textbf{Compresión/Reconstrucción:} Describir el uso de la lógica \texttt{waveletScheme.count()} y \texttt{waveletScheme.rebuild()} para obtener la tasa reconstruida ($\hat{f}(t)$).
+\end{itemize}
+
+\subsection{Implementación de $\mu$Event Detection}
+\begin{itemize}
+    \item \textbf{Mecanismo ECN/RED:} Detallar la configuración de la cola (\texttt{RedQueueDisc}, \texttt{MinTh}, \texttt{MaxTh}, \texttt{UseEcn=true}). Mencionar la trazabilidad de la marca ECN (\texttt{TraceConnectWithoutContext("Mark", ...)}).
+    \item \textbf{Parámetros de Congestión:} Especificar los umbrales utilizados (ej., $20\text{ KiB}$ y $200\text{ KiB}$ para KMin y KMax, si se ajustaron para reflejar el paper).
+\end{itemize}
+
+\section{Resultados y Análisis de Replicación}
+% (10 pts. resultados)
+Esta es la sección de \textbf{Resultados}.
+
+\subsection{Fidelidad del Monitoreo $\mu$Flow}
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[t]{0.45\textwidth}
+        \centering
+        \includegraphics[draft, width=\textwidth]{placeholder1.png} % Reemplazar con el gráfico real
+        \caption{Tasa de flujo vs. Tasa reconstruida (WaveSketch).}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.45\textwidth}
+        \centering
+        \includegraphics[draft, width=\textwidth]{placeholder2.png} % Reemplazar con el gráfico real
+        \caption{Métricas de precisión (ARE, Cosine Similarity) vs. Memoria.}
+    \end{subfigure}
+    \caption{Resultados de la replicación de $\mu$Flow Measurement.}
+    \label{fig:results_flow}
+\end{figure}
+\begin{itemize}
+    \item \textbf{Comparación de Tasa:} Presente una gráfica (Figura \ref{fig:results_flow}a) de la curva de tasa de flujo original ($f(t)$, de NS-3) contra la tasa reconstruida ($\hat{f}(t)$, de WaveSketch). Analice visualmente la fidelidad.
+    \item \textbf{Análisis de Precisión:} Presente una tabla o gráfica (Figura \ref{fig:results_flow}b) de las métricas de precisión (ARE, Cosine Similarity, etc.) obtenidas, comparándolas con los rangos reportados en el paper original (ej., Figuras 11 y 12 del paper).
+\end{itemize}
+
+\subsection{$\mu$Event Replay (Correlación de Congestión)}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[draft, width=0.8\columnwidth]{placeholder3.png} % Reemplazar con el gráfico real
+    \caption{Replicación del $\mu$Event Replay: Correlación de la Tasa de Flujo con las Marcas ECN.}
+    \label{fig:event_replay}
+\end{figure}
+\begin{itemize}
+\item Presente el resultado del \textit{Event Replay} (Figura \ref{fig:event_replay}).
+\item Muestre un segmento de la curva de tasa de flujo de un flujo y destaque (sombreando) las ventanas de tiempo donde se detectaron \textbf{\texttt{ecn\_marks}} ($\mu \text{Events}$).
+\item Analice cómo la tasa de flujo (el flujo víctima) reacciona inmediatamente después de la marca ECN, validando el concepto de \textit{Event Replay} (similar a la Figura 10c del paper).
+\end{itemize}
+
+\section{Conclusiones y Trabajo Futuro}
+% (10 pts. Conclusiones y trabajo futuro)
+\subsection{Conclusiones}
+Resuma los hallazgos principales. Confirme si la replicación del enfoque WaveSketch y el Event Replay fueron exitosos (ej., "WaveSketch logra una alta similitud de energía (>$0.95$) con una compresión significativa").
+\subsection{Trabajo Futuro}
+Mencione posibles extensiones:
+\begin{itemize}
+    \item Implementación de la versión completa de WaveSketch (parte \textit{heavy/light}).
+    \item Simulación del overhead de ancho de banda del monitoreo.
+    \item Integración de un algoritmo de congestión como DCQCN para un escenario de RDMA más fiel al paper.
+\end{itemize}
+
+\section*{Agradecimientos}
+(Opcional, si corresponde).
+
+\section*{Referencias}
+% (5 pts. Referencias, con buen uso de citas)
+Liste todas las referencias. La pauta requiere un buen uso de citas en el texto.
+\begin{thebibliography}{00}
+\bibitem{b1} Hao Zheng, et al. ``$\mu$MON: Empowering Microsecond-level Network Monitoring with Wavelets.'' ACM SIGCOMM 2024. [El paper replicado]
+\bibitem{b2} Una referencia de revista relacionada (ej. sobre ECN/DCTCP, como el paper de Alizadeh et al. o Zhu et al.).
+\bibitem{b3} Una referencia sobre la topología o el simulador (NS-3).
+\bibitem{b4} Otras referencias que haya citado en la sección de Trabajos Relacionados.
+\end{thebibliography}
+
+\end{document}

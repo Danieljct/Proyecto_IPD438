@@ -50,15 +50,21 @@ La salida de `fattree_ecn_clean` incluye mediciones periódicas de ECN, análisi
 de colas RED y reportes del agente WaveSketch.
 
 `fattree_k4_replay` genera el archivo indicado en `--flowCsv` (por defecto
-`flow_rate.csv`) con columnas `time_s, total_rate_gbps, ecn_marks`. Además de la
-curva de tasa agregada, se registra cuántas marcas ECN ocurrieron en cada
-ventana temporal (si `ecn_marks > 0`, hubo congestión marcada). El script
-`plot_flow_rate.py` permite visualizarlo y resaltar en rojo los instantes con
-marcado ECN:
+`flow_rate.csv`) con columnas `time_s, total_rate_gbps, reconstructed_rate_gbps,
+ecn_marks`. Además de la curva de tasa agregada, se registra cuántas marcas ECN
+ocurrieron en cada ventana temporal (si `ecn_marks > 0`, hubo congestión
+marcada) y la señal reconstruida aplicando el algoritmo `wavesketch/Wavelet`
+(se normaliza por un factor fijo de 1 000 para respetar los límites internos de
+WaveSketch). El script `plot_flow_rate.py` permite visualizar ambas curvas y
+resaltar en rojo los instantes con marcado ECN. Adicionalmente,
+`wavelet_reconstruct.py` sirve como herramienta aislada para reprocesar el CSV y
+generar una gráfica comparando la señal original con su reconstrucción:
 
 ```bash
 cd /home/daniel/PaperRedes/Proyecto_IPD438
 ./.venv/bin/python plot_flow_rate.py --input flow_rate.csv --output flow_rate.png
+# Reconstrucción wavelet (opcional)
+./.venv/bin/python wavelet_reconstruct.py --input flow_rate.csv --output wavelet_reconstruction.png
 ```
 
 > Requiere `pandas` y `matplotlib` (ya presentes en el entorno virtual del
