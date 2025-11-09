@@ -43,7 +43,7 @@ make fattree_k4_replay -j$(nproc)
 ```bash
 ./fattree
 ./fattree_ecn_clean > salida.txt 2>&1  # opcional: guardar salida
-./fattree_k4_replay --input=hadoop15.csv --flowCsv=flow_rate.csv --windowNs=1000000
+./fattree_k4_replay --input=hadoop15.csv --flowCsv=flow_rate.csv --queueCsv=queue_ground_truth.csv --windowNs=1000000 --samplingRatio=1.0
 ```
 
 La salida de `fattree_ecn_clean` incluye mediciones periódicas de ECN, análisis
@@ -55,13 +55,23 @@ ecn_marks`. Además de la curva de tasa agregada, se registra cuántas marcas EC
 ocurrieron en cada ventana temporal (si `ecn_marks > 0`, hubo congestión
 marcada) y la señal reconstruida aplicando el algoritmo `wavesketch/Wavelet`
 (se normaliza por un factor fijo de 1 000 para respetar los límites internos de
-WaveSketch). El script `plot_flow_rate.py` permite visualizar ambas curvas y
-resaltar en rojo los instantes con marcado ECN. Adicionalmente,
-`wavelet_reconstruct.py` sirve como herramienta aislada para reprocesar el CSV y
-generar una gráfica comparando la señal original con su reconstrucción:
+WaveSketch). Se añaden dos opciones para el análisis µMON:
+- `--samplingRatio`: probabilidad de aceptar un marcado ECN (permite emular
+  *packet sampling* con valores como `1.0`, `0.125`, `0.015625`, etc.).
+- `--queueCsv`: ruta del CSV donde se registran los valores máximos de cola por
+  ventana (`queue_ground_truth.csv` por omisión) y que se usa como *ground
+  truth* para calcular el *recall* µEvent.
+
+Al finalizar la simulación se imprime `µEvent recall = capturados / totales` en
+la consola y se generan los archivos `flow_rate.csv` y `queue_ground_truth.csv`.
+El script `plot_flow_rate.py` permite visualizar ambas curvas y resaltar en
+rojo los instantes con marcado ECN. Adicionalmente, `wavelet_reconstruct.py`
+sirve como herramienta aislada para reprocesar el CSV y generar una gráfica
+comparando la señal original con su reconstrucción:
 
 ```bash
 cd /home/daniel/PaperRedes/Proyecto_IPD438
+./fattree_k4_replay --input=hadoop15.csv --flowCsv=flow_rate.csv --queueCsv=queue_ground_truth.csv --windowNs=1000000 --samplingRatio=1.0
 ./.venv/bin/python plot_flow_rate.py --input flow_rate.csv --output flow_rate.png
 # Reconstrucción wavelet (opcional)
 ./.venv/bin/python wavelet_reconstruct.py --input flow_rate.csv --output wavelet_reconstruction.png

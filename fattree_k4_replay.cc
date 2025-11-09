@@ -16,6 +16,9 @@
 #include "ns3/traffic-control-module.h"
 #include "ns3/queue-disc.h"
 #include "ns3/queue-size.h"
+#include "ns3/queue.h"
+#include "ns3/red-queue-disc.h"
+#include "ns3/random-variable-stream.h"
 
 #include "wavesketch/Wavelet/wavelet.h"
 
@@ -29,6 +32,7 @@
 #include <memory>
 #include <map>
 #include <limits>
+#include <cmath>
 
 using namespace ns3;
 
@@ -40,22 +44,96 @@ constexpr uint32_t AGGS_PER_POD = K_VALUE / 2;           // 2
 constexpr uint32_t POD_COUNT = K_VALUE;                  // 4
 constexpr uint32_t CORE_SWITCHES = (K_VALUE / 2) * (K_VALUE / 2); // 4
 constexpr uint32_t TOTAL_HOSTS = POD_COUNT * EDGES_PER_POD * HOSTS_PER_EDGE; // 16
+ constexpr uint64_t RED_MIN_TH_BYTES = 20u * 1024u;
+ constexpr uint64_t RED_MAX_TH_BYTES = 200u * 1024u;
 
 const uint16_t UDP_PORT = 9000;
 const std::string DEFAULT_INPUT_FILE = "hadoop15.csv";
 const std::string DEFAULT_FLOW_CSV = "flow_rate.csv";
 } // namespace
 
+class CongestionEventTracker {
+public:
+  using GroundTruthMap = std::map<uint64_t, uint32_t>;
+
+  CongestionEventTracker(uint64_t windowNs, uint64_t thresholdBytes, std::string filename)
+      : m_windowNs(windowNs), m_thresholdBytes(thresholdBytes), m_filename(std::move(filename)) {}
+
+  void Record(uint32_t bytes) {
+    if (m_windowNs == 0) {
+      return;
+    }
+    uint64_t windowIndex = Simulator::Now().GetNanoSeconds() / m_windowNs;
+    uint32_t &stat = m_groundTruth[windowIndex];
+    if (bytes > stat) {
+      stat = bytes;
+    }
+  }
+
+  const GroundTruthMap &GroundTruth() const {
+    return m_groundTruth;
+  }
+
+  uint64_t ThresholdBytes() const {
+    return m_thresholdBytes;
+  }
+
+  void WriteCsv() const {
+    if (m_filename.empty()) {
+      return;
+    }
+    std::ofstream ofs(m_filename);
+    if (!ofs.is_open()) {
+      std::cerr << "Error: no se pudo abrir " << m_filename << " para escritura" << std::endl;
+      return;
+    }
+    ofs << "time_s,max_queue_bytes\n";
+    for (const auto &entry : m_groundTruth) {
+      double timeSeconds = static_cast<double>(entry.first * m_windowNs) / 1e9;
+      ofs << timeSeconds << ',' << entry.second << '\n';
+    }
+  }
+
+private:
+  uint64_t m_windowNs;
+  uint64_t m_thresholdBytes;
+  std::string m_filename;
+  GroundTruthMap m_groundTruth;
+};
 class FlowRateLogger {
 public:
-  FlowRateLogger(uint64_t windowNs, std::string filename)
-      : m_windowNs(windowNs), m_filename(std::move(filename)) {}
+  FlowRateLogger(uint64_t windowNs, std::string filename, double samplingRatio,
+                 Ptr<UniformRandomVariable> samplingRv)
+      : m_windowNs(windowNs),
+        m_filename(std::move(filename)),
+        m_samplingRatio(samplingRatio),
+        m_samplingRv(std::move(samplingRv)) {}
+
+  struct RecallMetrics {
+    uint32_t totalCongestionWindows = 0;
+    uint32_t capturedWindows = 0;
+    double recall = 0.0;
+  };
 
   void Record(uint32_t /*flowId*/, uint32_t bytes) {
     uint64_t nowNs = Simulator::Now().GetNanoSeconds();
     uint64_t windowIndex = nowNs / m_windowNs;
     auto &entry = m_windows[windowIndex];
-    entry.bytes += bytes;
+    if (m_samplingRatio <= 0.0) {
+      return;
+    }
+    uint64_t contribution = bytes;
+    if (m_samplingRatio < 1.0) {
+      if (!m_samplingRv) {
+        return;
+      }
+      if (m_samplingRv->GetValue() > m_samplingRatio) {
+        return;
+      }
+      double scaled = static_cast<double>(bytes) / m_samplingRatio;
+      contribution = static_cast<uint64_t>(std::llround(scaled));
+    }
+    entry.bytes += contribution;
   }
 
   void RecordEcnMark() {
@@ -90,19 +168,24 @@ public:
       samples.push_back(SampleRow{bucket.first, stats.bytes, static_cast<int32_t>(clamped), stats.ecnMarks});
     }
 
-  five_tuple syntheticFlow(0);
-  wavelet<false> waveletScheme;
-  waveletScheme.reset();
+    ofs << "time_s,total_rate_gbps,reconstructed_rate_gbps,ecn_marks\n";
+    if (samples.empty()) {
+      return;
+    }
+
+    five_tuple syntheticFlow(0);
+    wavelet<false> waveletScheme;
+    waveletScheme.reset();
 
     STREAM dict;
     STREAM_QUEUE &queue = dict[syntheticFlow];
 
     std::vector<int32_t> reconstructedValues(samples.size(), 0);
-    uint32_t tick = 1;
-    for (size_t i = 0; i < samples.size(); ++i, ++tick) {
-  queue.emplace_back(tick, samples[i].scaledValue);
-  waveletScheme.count(syntheticFlow, tick, samples[i].scaledValue);
-  reconstructedValues[i] = samples[i].scaledValue;
+    for (size_t i = 0; i < samples.size(); ++i) {
+      const uint32_t tick = static_cast<uint32_t>(samples[i].windowIndex + 1);
+      queue.emplace_back(tick, samples[i].scaledValue);
+      waveletScheme.count(syntheticFlow, tick, samples[i].scaledValue);
+      reconstructedValues[i] = samples[i].scaledValue;
     }
 
     waveletScheme.flush();
@@ -121,7 +204,7 @@ public:
       }
     }
 
-    ofs << "time_s,total_rate_gbps,reconstructed_rate_gbps,ecn_marks\n";
+
     for (size_t i = 0; i < samples.size(); ++i) {
       const SampleRow &row = samples[i];
       double timeSeconds = static_cast<double>(row.windowIndex * m_windowNs) / 1e9;
@@ -130,6 +213,26 @@ public:
       double reconstructedRate = reconstructedBytes * 8.0 / static_cast<double>(m_windowNs);
       ofs << timeSeconds << ',' << originalRate << ',' << reconstructedRate << ',' << row.ecnMarks << '\n';
     }
+  }
+
+  RecallMetrics ComputeRecall(const CongestionEventTracker::GroundTruthMap &groundTruth,
+                              uint64_t thresholdBytes) const {
+    RecallMetrics metrics;
+    for (const auto &entry : groundTruth) {
+      if (entry.second <= thresholdBytes) {
+        continue;
+      }
+      metrics.totalCongestionWindows += 1;
+      auto it = m_windows.find(entry.first);
+      if (it != m_windows.end() && it->second.ecnMarks > 0) {
+        metrics.capturedWindows += 1;
+      }
+    }
+    if (metrics.totalCongestionWindows > 0) {
+      metrics.recall = static_cast<double>(metrics.capturedWindows) /
+                       static_cast<double>(metrics.totalCongestionWindows);
+    }
+    return metrics;
   }
 
 private:
@@ -143,14 +246,34 @@ private:
   uint64_t m_windowNs;
   std::string m_filename;
   std::map<uint64_t, WindowStats> m_windows;
+  double m_samplingRatio = 1.0;
+  Ptr<UniformRandomVariable> m_samplingRv;
 };
 
 static std::unique_ptr<FlowRateLogger> g_flowLogger;
+static std::unique_ptr<CongestionEventTracker> g_congestionTracker;
+static Ptr<UniformRandomVariable> g_samplingRv;
+static double g_samplingRatio = 1.0;
+
+void OnBytesInQueue(uint32_t oldValue, uint32_t newValue);
 
 void OnQueueDiscMark(Ptr<const QueueDiscItem> /*item*/, const char * /*reason*/) {
-  if (g_flowLogger) {
-    g_flowLogger->RecordEcnMark();
+  if (!g_flowLogger) {
+    return;
   }
+  if (g_samplingRatio <= 0.0) {
+    return;
+  }
+  if (g_samplingRatio < 1.0) {
+    if (!g_samplingRv) {
+      return;
+    }
+    double sample = g_samplingRv->GetValue();
+    if (sample > g_samplingRatio) {
+      return;
+    }
+  }
+  g_flowLogger->RecordEcnMark();
 }
 
 void AttachEcnTracer(const QueueDiscContainer &container) {
@@ -158,7 +281,14 @@ void AttachEcnTracer(const QueueDiscContainer &container) {
     Ptr<QueueDisc> qd = container.Get(i);
     if (qd) {
       qd->TraceConnectWithoutContext("Mark", MakeCallback(&OnQueueDiscMark));
+      qd->TraceConnectWithoutContext("BytesInQueue", MakeCallback(&OnBytesInQueue));
     }
+  }
+}
+
+void OnBytesInQueue(uint32_t /*oldValue*/, uint32_t newValue) {
+  if (g_congestionTracker) {
+    g_congestionTracker->Record(newValue);
   }
 }
 
@@ -194,11 +324,15 @@ int main(int argc, char *argv[]) {
   std::string inputFile = DEFAULT_INPUT_FILE;
   std::string flowCsv = DEFAULT_FLOW_CSV;
   uint64_t windowNs = 1'000'000; // 1 ms por defecto
+  double samplingRatio = 1.0;
+  std::string queueCsv = "queue_ground_truth.csv";
 
   CommandLine cmd(__FILE__);
   cmd.AddValue("input", "Archivo CSV con la traza (fid,bytes,time,...)", inputFile);
   cmd.AddValue("flowCsv", "Archivo CSV de salida con el flow rate", flowCsv);
   cmd.AddValue("windowNs", "Ventana de agregación en nanosegundos", windowNs);
+  cmd.AddValue("samplingRatio", "Probabilidad de registrar un evento ECN (0-1]", samplingRatio);
+  cmd.AddValue("queueCsv", "Archivo CSV para registrar la congestión (ground truth)", queueCsv);
   cmd.Parse(argc, argv);
 
   std::ifstream traceFile(inputFile);
@@ -207,7 +341,14 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  g_flowLogger = std::make_unique<FlowRateLogger>(windowNs, flowCsv);
+  samplingRatio = std::clamp(samplingRatio, 0.0, 1.0);
+  g_samplingRatio = samplingRatio;
+  g_samplingRv = CreateObject<UniformRandomVariable>();
+  g_samplingRv->SetAttribute("Min", DoubleValue(0.0));
+  g_samplingRv->SetAttribute("Max", DoubleValue(1.0));
+
+  g_congestionTracker = std::make_unique<CongestionEventTracker>(windowNs, RED_MAX_TH_BYTES, queueCsv);
+  g_flowLogger = std::make_unique<FlowRateLogger>(windowNs, flowCsv, g_samplingRatio, g_samplingRv);
 
   NodeContainer hosts;
   hosts.Create(TOTAL_HOSTS);
@@ -233,9 +374,9 @@ int main(int argc, char *argv[]) {
 
   TrafficControlHelper tch;
   tch.SetRootQueueDisc("ns3::RedQueueDisc",
-                       "MinTh", DoubleValue(20),
-                       "MaxTh", DoubleValue(50),
-                       "MaxSize", QueueSizeValue(QueueSize("200p")),
+                       "MinTh", DoubleValue(static_cast<double>(RED_MIN_TH_BYTES)),
+                       "MaxTh", DoubleValue(static_cast<double>(RED_MAX_TH_BYTES)),
+                       "MaxSize", QueueSizeValue(QueueSize("400kB")),
                        "LinkBandwidth", StringValue("100Gbps"),
                        "LinkDelay", StringValue("1us"),
                        "UseEcn", BooleanValue(true),
@@ -353,8 +494,24 @@ int main(int argc, char *argv[]) {
   Simulator::Run();
   Simulator::Destroy();
 
+  if (g_congestionTracker) {
+    g_congestionTracker->WriteCsv();
+  }
+
   if (g_flowLogger) {
+    FlowRateLogger::RecallMetrics metrics;
+    if (g_congestionTracker) {
+      metrics = g_flowLogger->ComputeRecall(g_congestionTracker->GroundTruth(),
+                                            g_congestionTracker->ThresholdBytes());
+    }
     g_flowLogger->WriteCsv();
+    if (metrics.totalCongestionWindows > 0) {
+      std::cout << "µEvent recall: " << metrics.recall << " ("
+                << metrics.capturedWindows << '/' << metrics.totalCongestionWindows
+                << ")" << std::endl;
+    } else {
+      std::cout << "µEvent recall: n/a (sin eventos de congestión)" << std::endl;
+    }
     g_flowLogger.reset();
   }
 
